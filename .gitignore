@@ -1,0 +1,9 @@
+*.pyc
+*.swp
+@eaDir
+*.DS_Store
+*.swo
+build/
+dist/
+*.egg-info
+datashader_temp*
