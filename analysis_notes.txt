@@ -1,0 +1,38 @@
+Analysis HDF5
+-------------
+Animal Info (table)
+    - Experiment Name
+    - Experiment Directory
+    - Experiment Group
+
+Group
+- Animal
+    - Info Table
+        - Rec_Names
+        - Recording Directories
+        - Rec group: pre-CTA 4 taste, pre-CTA saccharin, post-CTA saccharin, post-CTA 4 taste
+        - Comments
+    - Held Units Table
+        - Unit Name
+        - Single Cell
+        - Unit Type
+        - Rec Names : unit name in rec
+        - pre or post CTA
+        - J3
+        - J3 percentile
+
+Single Cell Analysis
+- Area
+    - Exp Group
+        - Rec group
+            - n_cells
+            - n_taste responsive
+            - n_pal_responsive (4 taste only)
+            - % taste responsive
+            - % pal responsive (4 taste only)
+            - n_taste_discriminative
+            - % taste disciminative 
+        - n_taste_responsive pre (be sure not to double count between 4 taste and sacc)
+        - n_taste_responsive post
+        - 
+

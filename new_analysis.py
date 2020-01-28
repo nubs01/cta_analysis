@@ -26,11 +26,13 @@
 # For each experiment, compute:
 
 
-from blechpy.dio import h5io
 import numpy as np
+import pandas as pd
 from scipy.stats import mannwhitneyu, spearmanr, sem
 from blechpy import load_experiment, load_dataset
-from blechpy.analysis import stat_tests as stt
+from blechpy.dio import h5io
+from blechpy.analysis import stat_tests as stt, spike_analysis as sas
+from blechpy.utils import write_tools as wt
 
 
 def get_baseline_firing(rec, unit, win_size=1500):
@@ -70,7 +72,7 @@ def get_baseline_firing(rec, unit, win_size=1500):
     return np.hstack(baselines)
 
 
-def compare_baseline(rd1, u1, rd2, u2, win_size=1500):
+def compare_baseline_firing(rd1, u1, rd2, u2, win_size=1500):
     '''Compares baseline firing rates between 2 unit using the Mann-Whitney
     U-test. Baseline firing is taken from all trials from all digital inputs
     that are not excluded and have spike arrays.
@@ -139,6 +141,7 @@ def compare_taste_response(rd1, u1, din1, rd2, u2, din2,
 
     return win_starts, resp_u, resp_p
 
+
 def check_taste_responsiveness(rec, unit, win_size=1500, alpha=0.05):
     '''Runs through all digital inputs (non-excluded) and determines if neuron
     is taste responsive and to which tastant. Compares win_size ms before
@@ -175,7 +178,7 @@ def check_taste_responsiveness(rec, unit, win_size=1500, alpha=0.05):
     alpha = alpha/len(dins)
 
     for i in dins:
-        s, p = stt.check_taste_response(rec, unit, i, win_size=win_size)
+        p, stats = stt.check_taste_response(rec, unit, i, win_size=win_size)
         if p <= alpha:
             taste_responsive = True
 
@@ -198,19 +201,123 @@ def deduce_palatability_rank_order(rec, unit, dins, window):
 
 
 
-
-
+ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 1500, 'alpha': 0.01},
+                   'pal_responsive': {'win_size': 250, 'step_size': 25,
+                                      'time_win': [0, 2000], 'alpha': 0.05},
+                   'baseline_comparison': {'win_size': 1500, 'alpha': 0.01},
+                   'response_comparison': {'win_size': 250, 'step_size': 25,
+                                           'time_win': [0, 2000], 'alpha': 0.05}}
 
 
 class AnimalAnalysis(object):
-    def __init__(self, experiment=None):
+    def __init__(self, experiment=None, params=None):
         if experiment is None or isinstance(experiment, str):
             experiment = load_experiment(experiment)
+
+        self._params = deepcopy(ANALYSIS_PARAMS)
+        if params is not None:
+            for k, v in params.items():
+                if self._params.get(k):
+                    self._params[k].update(v)
+                else:
+                    self._params[k] = v
 
         save_dir = self.analysis_dir = experiment.analysis_dir
         rec_key = {}
         for i, rec in enumerate(experiment.rec_labels.items()):
             rec_key[i] = rec
-            
-        held_unit_dir = os.path.join(save_dir, 'held_unit_analysis')
-        self._files = {'single_cell': 1}
+
+        self._rec_key = rec_key
+        data_dir = self._data_dir = os.path.join(save_dir, 'data')
+        plot_dir = self._plot_dir = os.path.join(save_dir, 'plots')
+        held_unit_dir = os.path.join(data_dir, 'held_unit_analysis')
+        if not os.path.isdir(data_dir):
+            os.makedirs(data_dir)
+
+        if not os.path.isdir(plot_dir):
+            os.makedirs(plot_dir)
+
+        if not os.path.isdir(held_unit_dir):
+            os.makedirs(held_unit_dir)
+
+        self._files = {'params': os.path.join(save_dir, 'analysis_params.json'),
+                       'single_unit_data':
+                       os.path.join(data_dir, 'single_unit_data.json'),
+                       'single_unit_summary':,
+                       os.path.join(data_dir, 'single_unit_summary.json'),
+                       'held_unit_data':
+                       os.path.join(data_dir, 'held_unit_data.json'),
+                       'population_data':
+                       os.path.join(data_dir, 'population_data.json'),
+                       'norm_avg_mag_change':
+                       os.path.join(held_unit_dir, 'norm_avg_mag_change.npz'),
+                       'raw_avg_mag_change':
+                       os.path.join(held_unit_dir, 'raw_avg_mag_change.npz'),
+                       'data_readout':
+                       os.path.join(data_dir, 'data_readout.txt'),
+                       'held_unit_arrays':
+                       os.path.join(held_unit_dir, 'held_unit_arrays.npz')}
+
+        file_check = self.check_file_status()
+        if all(file_check.values()):
+            self.complete = True
+        else:
+            self.complete = False
+
+        if not file_check['params']:
+            wt.write_dict_to_json(self._params, self._files['params'])
+
+
+    def check_file_status(self):
+        file_check = dict.fromkeys(self._files.keys(), False)
+        for k, v in self._files.items():
+            if os.path.isfile(v):
+                file_check[k] = True
+
+        return file_check
+
+    def run(self, overwrite=True):
+        if self.complete and not overwrite:
+            print('Analysis already complete. Run with overwrite=True to re-run')
+            return
+
+        # Single unit analysis
+        single_unit_summary = pd.DataFrame(columns=['recording', 'area', 'n_cells',
+                                                    'n_taste_responsive',
+                                                    'n_pal_responsive',
+                                                    '%_taste_responsive',
+                                                    '%_pal_responsive'])
+        single_unit_data = pd.DataFrame(columns=['recording', 'unit', 'area',
+                                                 'unit_type', 'electrode',
+                                                 'taste_responsive',
+                                                 'pal_responsive'])
+        rec_key = self._rec_key
+        counts = {}
+        single_unit_stats = []
+        for i in  sorted(rec_key.keys()):
+            rn = rec_key[i][0]
+            rd = rec_keys[i][1]
+            dat = load_dataset(rd)
+            ut = dat.get_unit_table().query('single_unit == True')  # Restrict to single units
+            em = dat.electrode_mapping
+            counts[rn] = {}
+            for row in ut.iterrows():
+                el = row['electrode']
+                area = em.query('Electrode == @el')['area'].values[0]
+                if not counts[rn].get(area):
+                    counts[area] = {'n_cells': 0, 'n_taste_responsive': 0,
+                                    'n_pal_responsive': 0}
+
+
+                counts[area]['n_cells'] += 1
+
+
+
+
+
+
+
+
+
+
+
