@@ -36,3 +36,114 @@ Single Cell Analysis
         - n_taste_responsive post
         - 
 
+
+Project data I actually want
+per tastant:
+- % responses changed at each time point after stimulus
+- average magnitude of response change over all units
+- % units with baseline firing rate changes
+- % units with changed response
+- number of held units total
+
+
+
+Experiment Data
+Unit Info (already exists in exp.held_units, except rec_group)
+    - experiment
+    - unit
+    - electrode
+    - single_unit
+    - unit_type
+    - area
+    - recording
+    - rec_unit
+    - rec_group
+
+Group Summary
+    - experiment
+    - unit
+    - area
+    - rec_group
+    - mean_baseline
+    - sem_baseline
+    - taste_responsive
+    - min_tasty_p
+    - best_taste
+    - pal_responsive
+    - n_tastes
+    - days_held
+
+Group Taste Data
+- Label columns
+    - experiment
+    - unit
+    - tastant
+    - rec_group
+- labels (string np array, row for each unit)
+- time
+- raw_response (1 array for all units)
+- norm_response
+- raw_sem
+- norm_sem
+    - 
+Group Comparison Data
+- ID
+    - experiment
+    - tastant
+    - unit
+    - comparison (group1_vs_group2)
+- Summary (this is per unit)
+    - baseline_shift
+    - baseline_p
+    - baseline_u
+    - baseline_delta
+    - baseline_delta_sem
+    - Response changed bool
+    - Response changed tastants
+- Data (per unit * tastant)
+    - raw response changes (array, row per unit*tastant)
+    - norm response changes
+    - raw response change sem
+    - norm response change sem
+    - raw response p values
+    - norm response p values
+    - response time vector
+    - p time vector
+    - raw response u stats
+    - norm response u stats
+
+   
+
+
+Exp Dataframe : output location (* info that can be computed for single unit)
+* experiment : 
+* recording :
+* exp_group : defined at project level
+* rec_group :
+* held_unit_name : 
+* rec_unit_name :
+* area :
+* single_unit :
+* unit_type :
+* electrode :
+* tastant :
+* mean_baseline : out[rec_group]['mean_baseline']
+* sem_baseline : out[rec_group]['sem_baseline']
+- baseline_p : out[group_pair]['baseline_p']
+- baseline_u : out[group_pair]['baseline_u']
+- baseline_shift : out[group_pair]['baseline_shift']
+- mean_baseline_change : out[group_pair]['mean_baseline_change']
+- sem_baseline_change : out[group_pair]['sem_baseline_change']
+* taste_responsive_all : out[rec_group]['taste_responsive_all']
+* taste_responsive : out[rec_group][tastant][taste_responsive]
+* taste_responsive_p : out[rec_group][tastant][taste_responsive_p]
+* mean_taste_response : out[rec_group][tastant][mean_taste_response]
+* sem_taste_response : out[rec_group][tastant][sem_taste_response]
+- response_change : out[group_pair][tastant][norm_change]
+- earliest_response_divergence : out[group_pair][tastant][norm_earliest_change]
+- latest_response_divergence : out[group_pair][tastant][norm_latest_change]
+- min_response_change_p : out[group_pair][tastant][min_response_change_p]
+
+
+
+
