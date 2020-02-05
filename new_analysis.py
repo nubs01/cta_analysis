@@ -32,11 +32,20 @@ import numpy as np
 import pandas as pd
 from copy import deepcopy
 from scipy.stats import mannwhitneyu, spearmanr, sem
+from scipy.ndimage.filters import gaussian_filter1d
 import itertools as it
-from blechpy import load_experiment, load_dataset
+from blechpy import load_experiment, load_dataset, load_project
 from blechpy.dio import h5io
 from blechpy.analysis import stat_tests as stt, spike_analysis as sas
 from blechpy.utils import write_tools as wt, userIO
+import matplotlib
+matplotlib.use('TkAgg')
+import pylab as plt
+
+plot_params = {'xtick.labelsize': 14, 'ytick.labelsize': 14,
+               'axes.titlesize': 26, 'figure.titlesize': 28,
+               'axes.labelsize': 24}
+matplotlib.rcParams.update(plot_params)
 
 
 def get_taste_mapping(rec_dirs):
@@ -62,7 +71,7 @@ def get_taste_mapping(rec_dirs):
     return taste_map, tastants
 
 
-def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
+def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None, plot_dir=None):
     '''Check all changes in baselines firing and taste response between two or more groups
 
     Parameters
@@ -81,8 +90,9 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
     params: dict
     '''
     groups = unit_info['rec_group'].unique()
+    unit_name = unit_info['held_unit_name'].unique()[0]
 
-    group_pairs = it.combinations(groups, 2)
+    group_pairs = list(it.combinations(groups, 2))
     dir_key = {x['name']: x['dir'] for x in  rec_key.values()}
     group_key = {v['group']: v['name'] for v in rec_key.values()}
     tastants = unit_info['tastant'].unique()
@@ -96,8 +106,21 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
     baseline_alpha = params['baseline_comparison']['alpha']
     tasty_win = params['taste_responsive']['win_size']
     tasty_alpha = params['taste_responsive']['alpha']
+    psth_win = params['psth']['win_size']
+    psth_step = params['psth']['step_size']
+    psth_time_win = params['psth']['plot_window']
+    smoothing_win = params['psth']['smoothing_win']
 
     data = {}
+    psth_fn = os.path.join(plot_dir, 'Unit-%s_PSTH.png' % unit_name)
+    pfig, pax = plt.subplots(ncols=len(groups), figsize=(20,10))  # overlay PSTH per group
+    if not isinstance(pax, np.ndarray):
+        pax = [pax]
+
+    pax = {g : pax[i] for i,g in enumerate(groups)}
+    cfigs = {}  # per taste, norm psth overlay (groups) and response change
+    cax = {}
+    cfig_fn = {}
     for i, row in unit_info.iterrows():
         g = row['rec_group']
         unit = row['rec_unit_name']
@@ -109,6 +132,15 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
         if g not in data:
             data[g] = {}
             data[g]['tasty_ps'] = []
+
+        if t not in cfigs:
+            cfigs[t], cax[t] = plt.subplots(ncols=len(group_pairs)+1, figsize=(20,10))
+            if not isinstance(cax[t], np.ndarray):
+                cax[t] = np.array([cax[t]])
+
+            cfig_fn[t] = os.path.join(plot_dir, t, 'Unit-%s_Comparison.png' % unit_name)
+            if not os.path.isdir(os.path.join(plot_dir, t)):
+                os.mkdir(os.path.join(plot_dir,t))
 
         # aggregate baseline firing before CTA (even over days)
         times, spikes = h5io.get_spike_data(rd, unit, channel)
@@ -128,16 +160,55 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
             raise KeyError('Already existing data for group %s and tastant %s' % (g,t))
 
         bin_time, fr = sas.get_binned_firing_rate(times, spikes, bin_size, bin_step)
+        psth_time, psth = sas.get_binned_firing_rate(times, spikes, psth_win, psth_step)
+        psth = gaussian_filter1d(psth, sigma=smoothing_win) # smooth PSTH
+        tmp_idx = np.where((psth_time >= psth_time_win[0]) & (psth_time <= psth_time_win[1]))[0]
+        psth_time = psth_time[tmp_idx]
+        psth = psth[:, tmp_idx]
+        bin_time = bin_time - bin_size/2  # to get bin starts rather than centers
         data[g][t]['raw_response'] = fr
         data[g][t]['time'] = bin_time
+        data[g][t]['psth_time'] = psth_time
+        data[g][t]['psth_fr'] = psth
+
+        mpsth = np.mean(psth, axis=0)
+        spsth = sem(psth, axis=0)
+        pax[g].fill_between(psth_time, mpsth-spsth, mpsth+spsth, alpha=0.4)
+        pax[g].plot(psth_time, mpsth, linewidth=3, label=t)
+
         if norm_func:
             fr = norm_func(bin_time, fr)
             data[g][t]['norm_response'] = fr
+            norm_psth = norm_func(psth_time, psth)
+            data[g][t]['norm_psth_fr'] = norm_psth
+            mp = np.mean(norm_psth, axis=0)
+            sp = sem(norm_psth, axis=0)
+            cax[t][0].fill_between(psth_time, mp-sp, mp+sp, alpha=0.4)
+            cax[t][0].plot(psth_time, mp, linewidth=3, label=g)
 
         del times, spikes, bin_time, fr
 
 
     out = {}
+    for i, ax in enumerate(pax.items()):
+        ax[1].set_title(ax[0])
+        ax[1].set_xlabel('Time (ms)')
+        ax[1].legend()
+        ax[1].axvline(0, color='black', linestyle='--', linewidth=1)
+        if i == 0:
+            ax[1].set_ylabel('Firing Rate (Hz)')
+
+    pfig.suptitle('Peri-stimulus time histograms: Unit %s' % unit_name)
+
+    for t, fig in cfigs.items():
+        fig.subplots_adjust(top=0.8)
+        fig.suptitle('Taste response change\nUnit: %s, Tastant: %s' % (unit_name, t))
+        cax[t][0].set_xlabel('Time (ms)')
+        cax[t][0].set_ylabel('Firing Rate (Hz)')
+        cax[t][0].legend()
+        cax[t][0].set_title('Normalized PSTH')
+        cax[t][0].axvline(0, color='black', linewidth=1, linestyle='--')
+
     # Loop through group pairs and compare responses
     # Store delta, p-values, u-stats, 
     # Mean response for each tastant for each group
@@ -146,9 +217,17 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
             out[g] = {'mean_baseline': np.mean(data[g]['baseline']),
                       'sem_baseline': sem(data[g]['baseline'])}
 
+        pfig.savefig(psth_fn)
+        plt.close(pfig)
+        for t, fig in cfigs.items():
+            fig.savefig(cfig_fn[t])
+            plt.close(fig)
+
         return out
 
-    for g1, g2 in group_pairs:
+    for gidx, pair in enumerate(group_pairs):
+        g1 = pair[0]
+        g2 = pair[1]
         k = '%s_vs_%s' % (g1, g2)
 
         # Compare baselines
@@ -167,7 +246,7 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
             out[g2]['mean_baseline'] = np.mean(baseline2)
             out[g2]['sem_baseline'] = sem(baseline2)
 
-        mean_baseline_change, sem_baseline_change = stt.get_mean_difference(baseline1, baseline2)
+        mean_baseline_change, sem_baseline_change = sas.get_mean_difference(baseline1, baseline2)
 
         if k not in out:
             out[k] = {}
@@ -190,6 +269,9 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
             t1 = data[g1][t]['time']
             raw2 = data[g2][t]['raw_response']
             t2 = data[g2][t]['time']
+            psth_time = data[g1][t]['psth_time']
+            psth1 = data[g1][t]['psth_fr']
+            psth2 = data[g2][t]['psth_fr']
 
             idx1 = np.where((t1>=time_win[0]) & (t1<=time_win[1]))[0]
             idx2 = np.where((t2>=time_win[0]) & (t2<=time_win[1]))[0]
@@ -202,12 +284,15 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
             if 'norm_response' in data[g1][t]:
                 norm1 = data[g1][t]['norm_response']
                 norm2 = data[g2][t]['norm_response']
+                n_psth1 = data[g1][t]['norm_psth_fr']
+                n_psth2 = data[g2][t]['norm_psth_fr']
                 norm_u = raw_u.copy()
                 norm_p = raw_p.copy()
                 normalize = True
 
             # Store mean responses and delta
-            raw_change = stt.get_mean_difference(raw1, raw2)
+            # raw_change = sas.get_mean_difference(raw1, raw2)
+            raw_change = sas.get_mean_difference(psth1, psth2)
             if t not in out[k]:
                 out[k][t] = {}
 
@@ -216,9 +301,27 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
             out[k][t]['time'] = t1
 
             if normalize:
-                norm_change = stt.get_mean_difference(norm1, norm2)
+                # norm_change = sas.get_mean_difference(norm1, norm2)
+                norm_change = sas.get_mean_difference(n_psth1, n_psth2)
+                cax[t][gidx+1].fill_between(psth_time, norm_change[0] - norm_change[1],
+                                            norm_change[0] + norm_change[1], alpha=0.4)
+                cax[t][gidx+1].plot(psth_time, norm_change[0],
+                                    linewidth=3, label='norm_change')
+                cax[t][gidx+1].set_title('Normalized Response Change\n%s' % k)
                 out[k][t]['norm_mean_change'] = norm_change[0]
                 out[k][t]['norm_sem_change'] = norm_change[1]
+            else:
+                cax[t][gidx+1].fill_between(psth_time, raw_change[0] - raw_change[1],
+                                            raw_change[0] + raw_change[1], alpha=0.4)
+                cax[t][gidx+1].plot(psth_time, raw_change[0],
+                                    linewidth=3, label='raw_change')
+                cax[t][gidx+1].set_title('Raw Response Change\n%s' % k)
+
+            cax[t][gidx+1].set_xlabel('Time (ms)')
+            cax[t][gidx+1].axvline(0, color='black', linewidth=1, linestyle='--')
+            if i==0:
+                cax[t][gidx+1].set_ylabel('Response Change (Hz)')
+
 
             if t not in out[g1]:
                 out[g1][t] = {}
@@ -264,6 +367,7 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
                 out[k][t]['raw_latest_change'] = None
 
             if normalize:
+                # Bonferroni correction
                 norm_p = norm_p * len(idx1)
                 norm_sig = np.where(norm_p <= alpha)[0]
                 if len(norm_sig) > 0:
@@ -278,6 +382,15 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None):
 
                 out[k][t]['norm_p'] = norm_p
                 out[k][t]['norm_u'] = norm_u
+
+    pfig.savefig(psth_fn)
+    plt.close(pfig)
+    for t, fig in cfigs.items():
+        fig.savefig(cfig_fn[t])
+        plt.close(fig)
+
+    if out == {}:
+        raise ValueError()
 
     return out
 
@@ -424,8 +537,10 @@ ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 1500, 'alpha': 0.05},
                    'pal_responsive': {'win_size': 250, 'step_size': 25,
                                       'time_win': [0, 2000], 'alpha': 0.05},
                    'baseline_comparison': {'win_size': 1500, 'alpha': 0.01},
-                   'response_comparison': {'win_size': 250, 'step_size': 25,
-                                           'time_win': [0, 2000], 'alpha': 0.05}}
+                   'response_comparison': {'win_size': 250, 'step_size': 125,
+                                           'time_win': [0, 2000], 'alpha': 0.05},
+                   'psth': {'win_size': 250, 'step_size': 25, 'smoothing_win': 3,
+                            'plot_window': [-1500, 2000]}}
 
 class ProjectAnalysis(object):
     def __init__(self, project):
@@ -452,11 +567,127 @@ class ProjectAnalysis(object):
         if not os.path.isdir(self._plot_dir):
             os.mkdir(self._plot_dir)
 
-    def run(self):
+        self._params = {'response_change_alpha': 0.05,
+                        'mag_change_window': [-1500, 2000]}
+
+    def run(self, overwrite=False, new_params=None):
+        print('Analyzing Project %s...' % self.proj_name)
+        params = self._params
+        alpha = params['response_change_alpha']
+        t_win = params['mag_change_window']
+        exp_info = self._project._exp_info
+        exp_groups = exp_info['exp_group'].unique()
+        data, tastes = self._get_plot_data(alpha=alpha, overwrite=overwrite,
+                                           params=new_params)
+        plot_dir = self._plot_dir
+
+        for t in tastes:
+            mfn = os.path.join(plot_dir, 'Magnitude_Change-%s.png' % t)
+            pfn = os.path.join(plot_dir, 'Responses_Changed-%s.png' % t)
+            mfig, m_ax = plt.subplots(ncols=len(exp_groups),
+                                      figsize=(15,10))
+            pfig, p_ax = plt.subplots(ncols=len(exp_groups),
+                                      figsize=(15,10))
+
+            for i, eg in enumerate(exp_groups):
+                n_units = data[eg][t]['units']
+                # Plot avg mag change for each group per tastant
+                time = data[eg][t]['mag_time']
+                idx = np.where((time >= t_win[0]) & (time <= t_win[1]))[0]
+                mmc = data[eg][t]['mean_mag_change'][idx]
+                smc = data[eg][t]['sem_mag_change'][idx]
+                time = time[idx]
+                m_ax[i].fill_between(time, mmc - smc, mmc + smc, alpha=0.5)
+                m_ax[i].plot(time, mmc, linewidth=3)
+                m_ax[i].set_title('%s : %s, N=%i' % (eg, t, n_units))
+                m_ax[i].set_xlabel('Time (ms)')
+                m_ax[i].axvline(0, color='red', linestyle='--', linewidth=2)
+                if i == 0:
+                    m_ax[i].set_ylabel('Magnitude of reponse change (Hz)')
+
+                # Plot % units change at each time point for each group per tastant
+                n_sig  = data[eg][t]['n_changed']
+                n_t = data[eg][t]['change_time']
+                # pad array end for proper plotting
+                step = np.unique(np.diff(n_t))[0]
+                n_sig =np.array([*n_sig, n_sig[-1]])
+                n_t = [*n_t, n_t[-1]]
+                print(t)
+                print(n_sig)
+                n_sig = 100 * n_sig / n_units
+                p_ax[i].step(n_t, n_sig, where='post')
+                p_ax[i].set_xlabel('Post-stimulus Time (ms)')
+                p_ax[i].set_title('%s : %s, N=%i' % (eg, t, n_units))
+                if i == 0:
+                    p_ax[i].set_ylabel('% units with reponse changed')
+
+            mfig.suptitle('Average Magnitude of Reponse Change')
+            mfig.savefig(mfn)
+
+            pfig.suptitle('Percent units with significant change in response')
+            pfig.savefig(pfn)
+            plt.close('all')
+
+    def _aggregate_experiment_arrays(self, overwrite=False, params=None):
         exp_info = self._project._exp_info
         exp_groups = exp_info['exp_group'].unique()
 
-        # Plot avg mag change for each group
+        out = dict.fromkeys(exp_groups, None)
+        for i, row in exp_info.iterrows():
+            ea = CtaExperimentAnalysis(row['exp_dir'], params=params)
+            if not ea.complete or overwrite:
+                ea.run(overwrite=overwrite)
+
+            arrays = ea.get_analysis_data_arrays()
+            eg = row['exp_group']
+            if out[eg] is None:
+                out[eg] = arrays
+            else:
+                for k, v in arrays.items():
+                    out[eg][k] = np.vstack((out[eg][k], v))
+
+        return out
+
+    def _get_plot_data(self, alpha=0.05, overwrite=False, params=None):
+        exp_info = self._project._exp_info
+        exp_groups = exp_info['exp_group'].unique()
+
+        data = self._aggregate_experiment_arrays(overwrite=overwrite, params=params)
+        tastes = set()
+        for eg in exp_groups:
+            labels = data[eg]['row_labels']
+            headers = data[eg].pop('label_headers')[0,:]
+            tidx = np.where(headers == 'tastant')[0][0]
+            tastes.update(np.unique(labels[:, tidx]))
+
+        tidx = np.where(headers == 'tastant')[0][0]
+        new_data = {}
+        for eg, t in it.product(exp_groups, tastes):
+            labels = data[eg]['row_labels']
+            idx = np.where(labels[:, tidx] == t)[0]
+            tmp_dat = {k:v[idx, :] for k, v in data[eg].items()}
+
+            if eg not in new_data:
+                new_data[eg] = {}
+
+            if t not in new_data[eg]:
+                new_data[eg][t] = {}
+
+            mean_mag = np.mean(abs(tmp_dat['mean_response_change']), axis=0)
+            sem_mag = np.sqrt(np.sum(np.power(tmp_dat['sem_response_change'],2), axis=0))
+            mag_time = tmp_dat['response_time'][0, :]
+            p_time = tmp_dat['p_time'][0, :]
+            n_sig = np.sum(tmp_dat['response_change_p'] <= alpha, axis=0)
+
+            new_data[eg][t]['units'] = len(idx)
+            new_data[eg][t]['n_changed'] = n_sig
+            new_data[eg][t]['change_time'] = p_time
+            new_data[eg][t]['mean_mag_change'] = mean_mag
+            new_data[eg][t]['sem_mag_change'] = sem_mag
+            new_data[eg][t]['mag_time'] = mag_time
+
+        return new_data, tastes
+
 
 
 
@@ -493,8 +724,8 @@ class CtaExperimentAnalysis(object):
                        os.path.join(data_dir, 'single_unit_summary.tsv'),
                        'all_unit_dataframe':
                        os.path.join(data_dir, '%s_unit_data.p' % exp_name),
-                       'population_data':
-                       os.path.join(data_dir, 'population_data.json'),
+                       #'population_data':
+                       #os.path.join(data_dir, 'population_data.json'),
                        'data_readout':
                        os.path.join(data_dir, 'data_readout.txt'),
                        'held_unit_arrays':
@@ -525,7 +756,8 @@ class CtaExperimentAnalysis(object):
         for k, v in rec_key.items():
             da = DatasetAnalysis(v['dir'], params=self._params)
             if not da._complete:
-                da.run()
+                da.uun()
+
             ut = da._data.copy()
             ut = ut.drop(columns=['mean_taste_response', 'sem_taste_response'])
             ut = ut.rename(columns={'unit':'rec_unit_name',
@@ -601,6 +833,8 @@ class CtaExperimentAnalysis(object):
         if self.complete and not overwrite:
             print('Analysis already complete. Run with overwrite=True to re-run')
             return
+        else:
+            print('Analyzing Experiment %s...' % self._experiment.data_name)
 
         status = self._file_check()
         # Single unit analysis
@@ -683,7 +917,7 @@ class CtaExperimentAnalysis(object):
         output_dataframe = None
         for hu_name, unit_group in held_units.groupby('held_unit_name'):
             out = analyze_held_unit(unit_group, rec_key, norm_func=norm_func,
-                                    params=self._params)
+                                    params=self._params, plot_dir=self._plot_dir)
 
             group_dat = {k: out[k] for k in out.keys() if '_vs_' not in k}
             comp_dat = {k: out[k] for k in out.keys() if '_vs_' in k}
@@ -873,8 +1107,8 @@ class CtaExperimentAnalysis(object):
 
         resp_totals = held_units.dropna(subset=['response_change'])
         resp_totals = resp_totals.drop_duplicates(subset=['tastant', 'held_unit_name'])
-        resp_totals = resp_total.groupby(['area','tastant']).agg({'response_change':'sum',
-                                                                  'held_unit_name':'count'})
+        resp_totals = resp_totals.groupby(['area','tastant']).agg({'response_change':'sum',
+                                                                   'held_unit_name':'count'})
         resp_totals = resp_totals.rename(columns={'held_unit_name':'n_units'})
 
         # Make data readout
@@ -888,20 +1122,25 @@ class CtaExperimentAnalysis(object):
         # TODO: make plots
 
 
-class DatasetAnalysis(object):
-    def __init__(self, data_dir, params=None, shell=False):
-        if data_dir is None:
-            data_dir = userIO.get_filedirs('Select dataset', shell=shell)
 
-        dat = load_dataset(data_dir)
-        self.root_dir = data_dir
-        if dat is None:
+class DatasetAnalysis(object):
+    def __init__(self, dataset, params=None, shell=False):
+        if dataset is None:
+            dataset = userIO.get_filedirs('Select dataset', shell=shell)
+
+        if isinstance(dataset, str):
+            data_dir = dataset
+            dataset = load_dataset(data_dir)
+
+        if dataset is None:
             raise FileNotFoundError('dataset.p object not found in %s' % data_dir)
 
+        self._dataset = dataset
+        self.root_dir = data_dir
         del data_dir
 
         # Create directory structure for analysis data
-        save_dir = os.path.join(dat.root_dir, 'rn_analysis')
+        save_dir = os.path.join(self.root_dir, 'rn_analysis')
         if not os.path.isdir(save_dir):
             os.mkdir(save_dir)
 
@@ -959,6 +1198,8 @@ class DatasetAnalysis(object):
     def run(self, overwrite=False, shell=None):
         if self._complete and not overwrite:
             return
+        else:
+            print('Analyzing dataset %s...' % self._dataset.data_name)
 
         if shell is not None:
             self._shell = shell
