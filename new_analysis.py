@@ -36,7 +36,7 @@ from scipy.ndimage.filters import gaussian_filter1d
 import itertools as it
 from blechpy import load_experiment, load_dataset, load_project
 from blechpy.dio import h5io
-from blechpy.analysis import stat_tests as stt, spike_analysis as sas
+from blechpy.analysis import spike_analysis as sas
 from blechpy.utils import write_tools as wt, userIO
 import matplotlib
 matplotlib.use('TkAgg')
@@ -508,7 +508,8 @@ def check_taste_responsiveness(rec, unit, win_size=1500, alpha=0.05):
     # alpha = alpha/len(dins)
 
     for i in dins:
-        p, s = stt.check_taste_response(rec, unit, i, win_size=win_size)
+        time, spikes = h5io.get_spike_data(rec, unit, i)
+        p, s = sas.check_taste_response(time, spikes, win_size=win_size)
         stats[i] = s
         p_values[i] = p
 
@@ -537,7 +538,7 @@ ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 1500, 'alpha': 0.05},
                    'pal_responsive': {'win_size': 250, 'step_size': 25,
                                       'time_win': [0, 2000], 'alpha': 0.05},
                    'baseline_comparison': {'win_size': 1500, 'alpha': 0.01},
-                   'response_comparison': {'win_size': 250, 'step_size': 125,
+                   'response_comparison': {'win_size': 250, 'step_size': 250,
                                            'time_win': [0, 2000], 'alpha': 0.05},
                    'psth': {'win_size': 250, 'step_size': 25, 'smoothing_win': 3,
                             'plot_window': [-1500, 2000]}}

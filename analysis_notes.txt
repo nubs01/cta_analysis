@@ -146,4 +146,22 @@ Exp Dataframe : output location (* info that can be computed for single unit)
 
 
 
+HMM
+-------
+- Determine state transition time
+- per unit
+    - grab avg FR state 1 and avg FR state 2 (pick shortest state and use as
+      bin size, also try all and all)
+    - compute correlation to palatability and identity in each state
 
+- For each trial, plot violin FR in 1500ms after transition vs palatability & vs identity
+- Same for entire period before transition
+
+
+HMM Testing
+- Simulate dataset with same number of trials and similar neuron numbers
+    - Vary neuron number
+    - vary noise level
+    - try randomly dropping spikes 
+    - Try training on single trial until convergence
+    - Try hold-on-out jackknife training 
