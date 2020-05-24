@@ -113,7 +113,7 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None, plot_dir=
 
     data = {}
     psth_fn = os.path.join(plot_dir, 'Unit-%s_PSTH.png' % unit_name)
-    pfig, pax = plt.subplots(ncols=len(groups), figsize=(20,10))  # overlay PSTH per group
+    pfig, pax = plt.subplots(nrows=len(groups), figsize=(20,10))  # overlay PSTH per group
     if not isinstance(pax, np.ndarray):
         pax = [pax]
 
@@ -134,7 +134,7 @@ def analyze_held_unit(unit_info, rec_key, norm_func=None, params=None, plot_dir=
             data[g]['tasty_ps'] = []
 
         if t not in cfigs:
-            cfigs[t], cax[t] = plt.subplots(ncols=len(group_pairs)+1, figsize=(20,10))
+            cfigs[t], cax[t] = plt.subplots(nrows=len(group_pairs)+1, figsize=(20,10))
             if not isinstance(cax[t], np.ndarray):
                 cax[t] = np.array([cax[t]])
 
@@ -585,12 +585,15 @@ class ProjectAnalysis(object):
         for t in tastes:
             mfn = os.path.join(plot_dir, 'Magnitude_Change-%s.png' % t)
             pfn = os.path.join(plot_dir, 'Responses_Changed-%s.png' % t)
-            mfig, m_ax = plt.subplots(ncols=len(exp_groups),
+            mfig, m_ax = plt.subplots(nrows=len(exp_groups),
                                       figsize=(15,10))
-            pfig, p_ax = plt.subplots(ncols=len(exp_groups),
+            pfig, p_ax = plt.subplots(nrows=len(exp_groups),
                                       figsize=(15,10))
 
             for i, eg in enumerate(exp_groups):
+                if t not in data[eg]:
+                    continue
+
                 n_units = data[eg][t]['units']
                 # Plot avg mag change for each group per tastant
                 time = data[eg][t]['mag_time']
@@ -645,7 +648,10 @@ class ProjectAnalysis(object):
                 out[eg] = arrays
             else:
                 for k, v in arrays.items():
-                    out[eg][k] = np.vstack((out[eg][k], v))
+                    if v.size <= 1 and v == np.array(None):
+                        print('No held unit data for %s' % row['exp_name'])
+                    else:
+                        out[eg][k] = np.vstack((out[eg][k], v))
 
         return out
 
@@ -667,6 +673,8 @@ class ProjectAnalysis(object):
             labels = data[eg]['row_labels']
             idx = np.where(labels[:, tidx] == t)[0]
             tmp_dat = {k:v[idx, :] for k, v in data[eg].items()}
+            if len(idx) == 0:
+                continue
 
             if eg not in new_data:
                 new_data[eg] = {}
@@ -757,9 +765,12 @@ class CtaExperimentAnalysis(object):
         for k, v in rec_key.items():
             da = DatasetAnalysis(v['dir'], params=self._params)
             if not da._complete:
-                da.uun()
+                da.run()
 
             ut = da._data.copy()
+            if ut.empty:
+                continue
+
             ut = ut.drop(columns=['mean_taste_response', 'sem_taste_response'])
             ut = ut.rename(columns={'unit':'rec_unit_name',
                                     'taste_p_value':'taste_responsive_p',
@@ -996,7 +1007,7 @@ class CtaExperimentAnalysis(object):
     def get_analysis_data_arrays(self):
         status = self._file_check()
         if status['held_unit_arrays']:
-            npz = np.load(self._files['held_unit_arrays'])
+            npz = np.load(self._files['held_unit_arrays'], allow_pickle=True)
             out = {}
             for k in npz.files:
                 out[k] = npz[k]
