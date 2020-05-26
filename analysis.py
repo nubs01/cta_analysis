@@ -505,7 +505,9 @@ def compare_taste_responses(rec1, unit1, rec2, unit2, params):
         pvals = np.ones((nt,))
         ustats = np.zeros((nt,))
         for i, y in enumerate(zip(fr1.T, fr2.T)):
-            u, p = mann_whitney_u(y[0], y[1])
+            # u, p = mann_whitney_u(y[0], y[1])
+            # Mann-Whitney U gave odd results, trying anova
+            u, p = f_oneway(y[0], y[1])
             pvals[i] = p
             ustats[i] = u
 
@@ -515,7 +517,9 @@ def compare_taste_responses(rec1, unit1, rec2, unit2, params):
         # Compute mean difference using psth parameters
         pt1, psth1 = agg.get_psth(rec1, unit1, ch1, params)
         pt2, psth2 = agg.get_psth(rec2, unit2, ch2, params)
-        diff, sem_diff = sas.get_mean_difference(psth1, psth2)
+        # diff, sem_diff = sas.get_mean_difference(psth1, psth2)
+        # Mag diff plot looked odd, trying using same binning as comparison
+        diff, sem_diff = sas.get_mean_difference(fr1, fr2)
 
         #Store stuff
         out_pvals.append(pvals)
@@ -524,7 +528,7 @@ def compare_taste_responses(rec1, unit1, rec2, unit2, params):
         out_diff_sem.append(sem_diff)
         out_labels.append(taste)
 
-    return out_labels, out_pvals, out_ustats, out_diff, out_diff_sem, bin_time, pt1
+    return out_labels, out_pvals, out_ustats, out_diff, out_diff_sem, bin_time, bin_time # pt1
 
 
 def mann_whitney_u(resp1, resp2):
