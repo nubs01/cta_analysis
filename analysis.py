@@ -5,7 +5,8 @@ import numpy as np
 import feather
 import aggregation as agg
 import plotting as plt
-from scipy.stats import mannwhitneyu, spearmanr, sem, f_oneway, rankdata, pearsonr
+import statistics as stats
+from scipy.stats import mannwhitneyu, spearmanr, sem, f_oneway, rankdata, pearsonr, ttest_ind
 from blechpy import load_project, load_dataset, load_experiment
 from blechpy.plotting import data_plot as dplt
 from copy import deepcopy
@@ -21,7 +22,10 @@ ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 750, 'alpha': 0.05},
                    'response_comparison': {'win_size': 250, 'step_size': 250,
                                            'time_win': [0, 2000], 'alpha': 0.05},
                    'psth': {'win_size': 250, 'step_size': 25, 'smoothing_win': 3,
-                            'plot_window': [-1500, 2000]}}
+                            'plot_window': [-1500, 2000]},
+                   'pca': {'win_size': 250, 'step_size': 25,
+                           'smoothing_win': 3,
+                           'plot_window': [-500, 2000]}}
 
 def update_params(new, old):
     out = deepcopy(old)
@@ -80,6 +84,11 @@ class ProjectAnalysis(object):
 
         all_units = feather.read_dataframe(all_units_file)
         held_df = feather.read_dataframe(held_units_file)
+        if 'time_group' not in all_units.columns:
+            time_map = {'preCTA' : 'preCTA', 'ctaTrain': 'preCTA', 'ctaTest': 'postCTA', 'postCTA': 'postCTA'}
+            all_units['time_group'] = all_units.rec_group.map(time_map)
+            self.write_unit_info(all_units=all_units)
+
         return all_units, held_df
 
     def write_unit_info(self, all_units=None, held_df=None):
@@ -120,9 +129,7 @@ class ProjectAnalysis(object):
             data = np.load(save_file)
             return data
         else:
-            time_map = {'preCTA' : 'preCTA', 'ctaTrain': 'preCTA', 'ctaTest': 'postCTA', 'postCTA': 'postCTA'}
             rec_map = {'preCTA': 'postCTA', 'ctaTrain': 'ctaTest'}
-            all_units['time_group'] = all_units.rec_group.map(time_map)
             all_units = all_units.dropna(subset=['held_unit_name'])
             all_units = all_units[all_units['area'] == 'GC']
 
@@ -241,6 +248,7 @@ class ProjectAnalysis(object):
     def process_single_units(self, params=None, overwrite=False):
         save_dir = os.path.join(self.save_dir, 'single_unit_responses')
         pal_file = os.path.join(save_dir, 'palatability_data.npz')
+        resp_file = os.path.join(save_dir, 'taste_responsive_pvals.npz')
         tasty_unit_file = os.path.join(save_dir, 'unit_taste_responsivity.feather')
         pal_unit_file = os.path.join(save_dir, 'unit_pal_discrim.feather')
         params = self.get_params(params)
@@ -255,13 +263,16 @@ class ProjectAnalysis(object):
         if overwrite and os.path.isfile(pal_file):
             os.remove(pal_file)
 
+        if overwrite and os.path.isfile(resp_file):
+            os.remove(resp_file)
+
         all_units, _ = self.get_unit_info()
         all_units = all_units[all_units['single_unit']]
         resp_units = all_units.groupby('rec_dir', group_keys=False).apply(apply_tastes)
         print('-' * 80)
         print('Processing taste resposiveness')
         print('-' * 80)
-        resp_units = resp_units.apply(lambda x: apply_taste_responsive(x, params), axis=1)
+        resp_units = resp_units.apply(lambda x: apply_taste_responsive(x, params, resp_file), axis=1)
         feather.write_dataframe(resp_units, tasty_unit_file)
 
         pal_units = all_units[all_units.rec_name.str.contains('4taste')].copy()
@@ -288,16 +299,75 @@ class ProjectAnalysis(object):
         spearman_file = os.path.join(save_dir, 'palatability_spearman.svg')
         pearson_file = os.path.join(save_dir, 'palatability_pearson.svg')
         # For responsive, plot 
-        time_map = {'preCTA' : 'preCTA', 'ctaTrain': 'preCTA', 'ctaTest':
-                    'postCTA', 'postCTA': 'postCTA'}
-        resp_units['time_group'] = resp_units.rec_group.map(time_map)
-        pal_units['time_group'] = pal_units.rec_group.map(time_map)
+        if 'time_group' not in resp_units.columns or 'time_group' not in pal_units.columns:
+            time_map = {'preCTA' : 'preCTA', 'ctaTrain': 'preCTA', 'ctaTest':
+                        'postCTA', 'postCTA': 'postCTA'}
+            resp_units['time_group'] = resp_units.rec_group.map(time_map)
+            pal_units['time_group'] = pal_units.rec_group.map(time_map)
+
         tmp_grp = resp_units.groupby(['exp_group', 'time_group', 'taste'])['taste_responsive']
         resp_df = tmp_grp.apply(lambda x: 100 * np.sum(x) / len(x)).reset_index()
         plt.plot_taste_responsive(resp_df, resp_file)
         plt.plot_taste_discriminative(pal_units, discrim_file)
         plt.plot_aggregate_spearman(pal_units, spearman_file)
         plt.plot_aggregate_pearson(pal_units, pearson_file)
+
+        spear_mean = os.path.join(save_dir, 'Mean_Spearmann.svg')
+        pear_mean = os.path.join(save_dir, 'Mean_Pearson.svg')
+        resp_time = os.path.join(save_dir, 'Taste_responsive_over_time.svg')
+        resp_data = os.path.join(save_dir, 'taste_responsive_pvals.npz')
+        pal_data = os.path.join(save_dir, 'palatability_data.npz')
+        plt.plot_mean_spearman(pal_data, spear_mean)
+        plt.plot_mean_pearson(pal_data, pear_mean)
+        plt.plot_taste_response_over_time(resp_data, resp_time)
+
+    def pca_analysis(self):
+        '''Grab units held across pre OR post. For each animal do pca on firing
+        rate traces, then plot for individual traces and mean trace for each
+        taste. 1 plot per animal, pre & post subplot
+        '''
+        save_dir = os.path.join(self.save_dir, 'pca_analysis')
+        params = self.get_params()
+        all_units, held_units = self.get_unit_info()
+        all_units = all_units.dropna(subset=['held_unit_name'])
+        all_units = all_units.query('area == "GC"')
+        unit_names = all_units.held_unit_name.unique()
+        held_units = held_units.dropna(subset=['held_unit_name'])
+        held_units = held_units[held_units['held_unit_name'].isin(unit_names)]
+        held_units = held_units.apply(apply_info_from_rec_dir, axis=1)
+        held_units = held_units[held_units['held_over'] != 'cta']
+        unit_names = held_units['held_unit_name'].unique()
+        all_units = all_units[all_units.held_unit_name.isin(unit_names)]
+        # Now all_units and held_units have only units that are held over one
+        # half of the experiment and are in GC
+        for name, group in held_units.groupby(['exp_name']):
+            fn = os.path.join(save_dir, '%s_pca_analysis.svg' % name)
+            plt.plot_pca_traces(group, params, fn, exp_name=name)
+
+
+def apply_info_from_rec_dir(row):
+    rd1 = row['rec1']
+    rd2 = row['rec2']
+    if 'preCTA' in rd1 and 'Train' in rd2:
+        row['held_over'] = 'pre'
+        row['time_group'] = 'preCTA'
+    elif 'postCTA' in rd1 and 'Test' in rd2:
+        row['held_over'] = 'post'
+        row['time_group'] = 'postCTA'
+    else:
+        row['held_over'] = 'cta'
+        row['time_group'] = None
+
+    rec = os.path.basename(rd1).split('_')
+    row['exp_name'] = rec[0]
+    row['rec_group'] = rec[-3]
+    return row
+
+
+
+
+
+
 
 
 def apply_discrim_and_pal(row, params, save_file, plot_dir):
@@ -312,6 +382,8 @@ def apply_discrim_and_pal(row, params, save_file, plot_dir):
     rec_name = row['rec_name']
     unit = row['unit_num']
     unit_name = row['unit_name']
+    exp_group = row['exp_group']
+    time_group = row['time_group']
     print('Analyzing %s %s...' % (rec_name, unit_name))
 
     # Check taste dicriminability
@@ -402,7 +474,7 @@ def apply_discrim_and_pal(row, params, save_file, plot_dir):
         row['pearson_peak'] = time[pmax]
 
         # Save data array
-        label = (rec, unit)
+        label = (exp_group, time_group, rec, unit)
         if not os.path.isfile(save_file):
             np.savez(save_file, labels=np.array([label]), time=time,
                      spearman_r=s_rs, spearman_p=s_ps, pearson_r=p_rs,
@@ -417,9 +489,9 @@ def apply_discrim_and_pal(row, params, save_file, plot_dir):
             spearman_p = np.vstack((data['spearman_p'], s_ps))
             pearson_r = np.vstack((data['pearson_r'], p_rs))
             pearson_p = np.vstack((data['pearson_p'], p_ps))
-            np.savez(save_file, labels=np.array([label]), time=time,
-                     spearman_r=s_rs, spearman_p=s_ps, pearson_r=p_rs,
-                     pearson_p=p_ps)
+            np.savez(save_file, labels=labels, time=time,
+                     spearman_r=spearman_r, spearman_p=spearman_p, pearson_r=pearson_r,
+                     pearson_p=pearson_p)
 
         # Plot PSTHs
         # Plot spearman r & p
@@ -434,7 +506,7 @@ def apply_discrim_and_pal(row, params, save_file, plot_dir):
     return row
 
 
-def apply_taste_responsive(row, params):
+def apply_taste_responsive(row, params, data_file):
     bin_size = params['taste_responsive']['win_size']
     alpha = params['taste_responsive']['alpha']
     rec = row['rec_dir']
@@ -454,11 +526,42 @@ def apply_taste_responsive(row, params):
         f = 0
         p = 1
     else:
-        f, p = f_oneway(baseline, response)
+        f, p = ttest_ind(baseline, response)
 
     row['taste_responsive'] = (p <= alpha)
     row['reponse_p'] = p
     row['response_f'] = f
+
+    # Break it up by time and save array
+    # Use one way anova and dunnett's post hoc to compare all time bins to baseline
+    bin_size = params['response_comparison']['win_size']
+    step_size = params['response_comparison']['step_size']
+    t_end = params['response_comparison']['time_win'][1]
+    time, fr, _ = agg.get_firing_rate_trace(rec, unit, ch, bin_size,
+                                            t_start=-bin_size, t_end=bin_size)
+    f, p = f_oneway(*fr.T)
+    if p > alpha:
+        return row
+
+    baseline = fr[:,0]
+    fr = fr[:,1:]
+    fr = [fr[:,i] for i in range(fr.shape[1])]
+    time = time[:,1:]
+    n_bins = len(time)
+    # Now use Dunnett's to compare each time bin to baseline
+    CIs, pvals = stats.dunnetts_post_hoc(baseline, fr, alpha)
+    # Open npz file and append to arrays
+    pvals = np.array(pvals)
+    data = np.load(data_file)
+    labels = data['labels']
+    PV = data['pvals']
+    labels.append((row['exp_group'], row['rec_dir'], row['unit_num'],
+                   row['time_group'], row['taste']))
+    PV = np.vstack((PV, pvals))
+    if not np.array_equal(data['time'], time):
+        raise ValueError('Time vectors dont match')
+
+    np.savez(data_file, labels=labels, pvals=PV, time=data['time'])
     return row
 
 
@@ -594,3 +697,5 @@ def fix_area(proj):
 
 
 
+if __name__=="__main__":
+    print('Hello World')

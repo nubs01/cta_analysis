@@ -4,12 +4,12 @@ import numpy as np
 import seaborn as sns
 import pylab as plt
 from scipy.ndimage.filters import gaussian_filter1d
+from sklearn.decomposition import PCA
 from blechpy import load_dataset, load_experiment, load_project
 from blechpy.dio import h5io
 from blechpy.plotting import data_plot as dplt
 from blechpy.analysis import spike_analysis as sas
 from scipy.stats import sem
-import pingouin as pg
 import aggregation as agg
 
 
@@ -424,4 +424,202 @@ def plot_aggregate_pearson(pal_df, save_file):
     return
 
 
+def plot_mean_spearman(data_file, save_file):
+    data = np.load(data_file)
+    labels = data['labels']
+    spear_rs = data['spearman_rs']
+    time = data['time']
+    exp_groups = np.unique(labels[:,0])
+    time_groups = np.unique(labels[:,1])
+    df = pd.DataFrame(spear_rs, columns=time)
+    df['exp_group'] = labels[:,0]
+    df['time_group'] = label[:,1]
+    df2 = pd.melt(df, id_vars['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
+    g = sns.catplot(df2, x='time', y='R', col='exp_group', row='time_group')
+    g.set_titles('{col_name} - {row_name}')
+    g.set_xlabels('Time (ms)')
+    g.set_ylabel("Spearman's R")
+    g._legend.remove()
+    plt.subplots_adjust(top=0.85)
+    g.fig.suptitle('Mean Spearman Correlation')
+    g.fig.savefig(save_file)
+    plt.close(g.fig)
 
+
+def plot_mean_pearson(data_file, save_file):
+    data = np.load(data_file)
+    labels = data['labels']
+    pear_rs = data['pearson_rs']
+    time = data['time']
+    exp_groups = np.unique(labels[:,0])
+    time_groups = np.unique(labels[:,1])
+    df = pd.DataFrame(pear_rs, columns=time)
+    df['exp_group'] = labels[:,0]
+    df['time_group'] = label[:,1]
+    df2 = pd.melt(df, id_vars['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
+    g = sns.catplot(df2, x='time', y='R', col='exp_group', row='time_group')
+    g.set_titles('{col_name} - {row_name}')
+    g.set_xlabels('Time (ms)')
+    g.set_ylabel("Pearson's R")
+    g._legend.remove()
+    plt.subplots_adjust(top=0.85)
+    g.fig.suptitle('Mean Pearson Correlation')
+    g.fig.savefig(save_file)
+    plt.close(g.fig)
+
+
+def plot_taste_response_over_time(dat_file, save_file, alpha):
+    data = np.load(data_file)
+    labels = data['labels']
+    pvals = data['pvals']
+    time = data['time']
+
+    exp_groups = np.unique(labels[:,0])
+    time_groups = np.unique(labels[:,3])
+    tastes = np.unique(labels[:,-1])
+    df = pd.DataFrame(pvals, columns=time)
+    df['exp_group'] = labels[:,0]
+    df['time_group'] = labels[:,3]
+    df['taste'] = labels[:,-1]
+    df2 = pd.melt(df, id_vars=['exp_group', 'time_group', 'taste'],
+                  value_vars=time, var_name='time', value_name='pval')
+    df2['sig'] = df2.pval <= alpha
+    df3 = df2[df2.sig].groupby(['exp_group','time_group','taste'])['sig'].count().reset_index()
+    for tst in tastes:
+        fn = save_file.replace('.svg','-%s.svg' % tst)
+        tmp = df3[df3.taste == tst]
+        g = sns.catplot(data=tmp, x='time', y='sig', hue='time_group', col='exp_group', kind='bar')
+        g.set_titles('{col_name}')
+        g.set_ylabels('# of taste responsive cells')
+        g.set_xlabels('Time (ms)')
+        g._legend.set_title('')
+        plt.subplots_adjust(top=0.85)
+        g.fig.suptitle('Taste Responsive - %s' % tst)
+        g.fig.savefig(fn)
+        plt.close(g.fig)
+
+
+def plot_pca_traces(df, params, save_file, exp_name=None):
+    bin_size = params['pca']['win_size']
+    bin_step = params['pca']['step_size']
+    time_start = params['pca']['time_win'][0]
+    time_end = params['pca']['time_win'][1]
+    smoothing = params['pca']['smoothing_win']
+
+    fig_all = plt.figure()
+    fig_mean = plt.figure()
+    plt_i = 0
+    colors = {'Saccharin': 'tab:purple', 'Quinine': 'tab:red', 'NaCl':
+              'tab:green', 'Citric Acid': 'tab:orange', 'Water': 'tab:blue'}
+    for name, group in df.groupby('time_group'):
+        plt_i += 1
+        rd1 = group['rec1'].unique()
+        rd2 = group['rec2'].unique()
+        if len(rd1) > 1 or len(rd2) > 1:
+            raise ValueError('Too many recording directories')
+
+        rd1 = rd1[0]
+        rd2 = rd2[0]
+        units1 = group['unit1'].unique()
+        units2 = group['unit2'].unique()
+        dim1 = load_dataset(rd1).dig_in_mapping.set_index('channel')
+        dim2 = load_dataset(rd2).dig_in_mapping.set_index('channel')
+
+        time, sa = sas.get_spike_data(rd1, units1)
+        spikes = []
+        labels = []
+        if isinstance(sa, dict):
+            for k,v in sa.items():
+                ch = int(k.split('_')[-1])
+                tst = dim1.loc[ch, 'name']
+                l = [tst]*v.shape[0]
+                labels.extend(l)
+                spikes.append(v)
+
+        else:
+            spikes.append(sa)
+            l = [dim1.loc[0,'name']]*sa.shape[0]
+            labels.extend(l)
+
+        # Again with rec2
+        t, sa = sas.get_spike_data(rd2, units2)
+        if isinstance(sa, dict):
+            for k,v in sa.items():
+                ch = int(k.split('_')[-1])
+                tst = dim2.loc[ch, 'name']
+                l = [tst]*v.shape[0]
+                labels.extend(l)
+                spikes.append(v)
+
+        else:
+            spikes.append(sa)
+            l = [dim2.loc[0,'name']]*sa.shape[0]
+            labels.extend(l)
+
+        spikes = np.vstack(spikes)
+        labels = np.array(labels)
+
+        # trim to size
+        idx = np.where((time >= time_start) & (time <= time_end))[0]
+        spikes = spikes[:, :, idx]
+        time = time[idx]
+
+        # Convert to firing rates
+        bin_start = np.arange(time[0], time[-1] - bin_size + bin_step, bin_step)
+        bin_time = bin_start + int(bin_size/2)
+        n_trials, n_units, _ = spikes.shape
+        n_bins = len(bin_start)
+
+        firing_rate = np.zeros((n_trials, n_units, n_bins))
+        for i, start in enumerate(bin_start):
+            idx = np.where((time >= start) & (time <= start+bin_size))[0]
+            firing_rate[:, :, i] = np.sum(spikes[:, :, idx], axis=-1) / (bin_size/1000)
+
+        # Do PCA on all data, put in (trials*time)xcells 2D matrix
+        pca_data = np.zeros((n_trials, n_units, n_bins))
+        pca = PCA(n_components=3)
+        fr = np.split(firing_rate, n_bins, axis=-1)
+        fr = np.vstack(fr).squeeze()
+        pca.fit(fr)
+        pc_data = []
+        pc_means = {}
+        for i, t in enumerate(bin_time):
+            pc = pca.transform(firing_rate[:,:,i])
+            tmp = [(i, x, y, z) for x,y,z in pc]
+            tmp = [(l, *x) for l,x in zip(labels,tmp)]
+            pc_data.extend(tmp)
+
+            for tst in np.unique(labels):
+                idx = np.where(labels == tst)[0]
+                tmp = [(x,y,z) for _,_,x,y,z in tmp]
+                tmp = np.array(tmp)
+                tmp = tmp[idx, :]
+                tmp = np.mean(tmp, axis=0)
+                if tst in pc_means:
+                    pc_means[tst].append(tmp)
+                else:
+                    pc_means[tst] = [tmp]
+
+        # Now pc_data is a list of tuples with (taste, time_idx, x, y, z) in PC
+        # space
+        ax_all = fig_all.add_subplot(1, 2, plt_i, projection='3d')
+        ax_mean = fig_mean.add_subplot(1,2,plt_i, projection='3d')
+        for tst, t, x, y, z in pc_data:
+            ax_all.scatter(x,y,z,marker='o', color=colors[tst], alpha=0.6, label=tst)
+
+        for tst in np.unique(labels):
+            dat = np.vstack(pc_means[tst])
+            ax_mean.scatter(dat[:,0], dat[:,1], dat[:,2], marker='o', color=colors[tst], label=tst)
+
+        ax_all.set_title(name)
+        ax_mean.set_title(name)
+        if plt_i == 0:
+            ax_all.legend()
+            ax_means.legend()
+
+    fig_all.suptitle(exp_name)
+    fig_mean.suptitle(exp_name)
+    fig_all.savefig(save_file)
+    fig_mean.savefig(save_file.replace('.svg','-mean.svg'))
+    plt.close(fig_all)
+    plt.close(fig_mean)
