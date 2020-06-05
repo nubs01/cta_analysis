@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.stats.t import ppf
+from scipy.stats import t
 
 
 def dunnetts_post_hoc(X0, X, alpha):
@@ -15,12 +15,12 @@ def dunnetts_post_hoc(X0, X, alpha):
     N = [len(x) for x in X]
     m0 = np.mean(X0)
     N0 = len(X0)
-    t_cv = ppf(1-(alpha/2), n) # get 2-tailed critical value from t-disitribution
+    t_cv = t.ppf(1-(alpha/2), n) # get 2-tailed critical value from t-disitribution
     CI = []
     P = []
     for x, Ni in zip(X, N):
         mx = np.mean(x)
-        A0 = t_cv*s*sqrt(1/Ni + 1/N0)
+        A0 = t_cv*s*np.sqrt(1/Ni + 1/N0)
         Ai = np.abs(mx - m0)
         Ti = Ai/(s * np.sqrt(1/Ni + 1/N0))
         Pi = t.sf(Ti, n)

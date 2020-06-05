@@ -10,7 +10,7 @@ from scipy.stats import mannwhitneyu, spearmanr, sem, f_oneway, rankdata, pearso
 from blechpy import load_project, load_dataset, load_experiment
 from blechpy.plotting import data_plot as dplt
 from copy import deepcopy
-from blechpy.analysis import spike_analysis as sas
+from blechpy.analysis import spike_analysis as sas, poissonHMM as phmm
 from blechpy.dio import h5io
 from scipy.stats import sem
 from blechpy.utils import write_tools as wt
@@ -25,7 +25,7 @@ ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 750, 'alpha': 0.05},
                             'plot_window': [-1500, 2000]},
                    'pca': {'win_size': 250, 'step_size': 25,
                            'smoothing_win': 3,
-                           'plot_window': [-500, 2000]}}
+                           'plot_window': [-500, 2000], 'time_win': [-1000, 2000]}}
 
 def update_params(new, old):
     out = deepcopy(old)
@@ -298,6 +298,7 @@ class ProjectAnalysis(object):
         discrim_file = os.path.join(save_dir, 'taste_discriminative.svg')
         spearman_file = os.path.join(save_dir, 'palatability_spearman.svg')
         pearson_file = os.path.join(save_dir, 'palatability_pearson.svg')
+        params = self.get_params()
         # For responsive, plot 
         if 'time_group' not in resp_units.columns or 'time_group' not in pal_units.columns:
             time_map = {'preCTA' : 'preCTA', 'ctaTrain': 'preCTA', 'ctaTest':
@@ -319,7 +320,8 @@ class ProjectAnalysis(object):
         pal_data = os.path.join(save_dir, 'palatability_data.npz')
         plt.plot_mean_spearman(pal_data, spear_mean)
         plt.plot_mean_pearson(pal_data, pear_mean)
-        plt.plot_taste_response_over_time(resp_data, resp_time)
+        alpha = params['taste_responsive']['alpha']
+        plt.plot_taste_response_over_time(resp_data, resp_time, alpha)
 
     def pca_analysis(self):
         '''Grab units held across pre OR post. For each animal do pca on firing
@@ -327,6 +329,9 @@ class ProjectAnalysis(object):
         taste. 1 plot per animal, pre & post subplot
         '''
         save_dir = os.path.join(self.save_dir, 'pca_analysis')
+        if not os.path.isdir(save_dir):
+            os.mkdir(save_dir)
+
         params = self.get_params()
         all_units, held_units = self.get_unit_info()
         all_units = all_units.dropna(subset=['held_unit_name'])
@@ -344,6 +349,31 @@ class ProjectAnalysis(object):
             fn = os.path.join(save_dir, '%s_pca_analysis.svg' % name)
             plt.plot_pca_traces(group, params, fn, exp_name=name)
 
+    def mds_analysis(self):
+        '''Grab units held across pre OR post. For each animal do MDS on firing
+        rates in first half and second half of response, then plot 2D MDS
+        represenation for pre & post. Early and late on same axes. Same MDS
+        distance matrices between tastes.
+        '''
+        save_dir = os.path.join(self.save_dir, 'mds_analysis')
+        params = self.get_params()
+
+        # Grab and make relevant dataFrames
+        all_units, held_units = self.get_unit_info()
+        all_units = all_units.dropna(subset=['held_unit_name'])
+        all_units = all_units.query('area == "GC"')
+        unit_names = all_units.held_unit_name.unique()
+        held_units = held_units.dropna(subset=['held_unit_name'])
+        held_units = held_units[held_units['held_unit_name'].isin(unit_names)]
+        held_units = held_units.apply(apply_info_from_rec_dir, axis=1)
+        held_units = held_units[held_units['held_over'] != 'cta']
+        unit_names = held_units['held_unit_name'].unique()
+        all_units = all_units[all_units.held_unit_name.isin(unit_names)]
+        # Now all_units and held_units have only units that are held over one
+        # half of the experiment and are in GC
+        for name, group in held_units.groupby(['exp_name']):
+            fn = os.path.join(save_dir, '%s_mds_analysis.svg' % name)
+            plt.plot_mds(group, params, fn, exp_name=name)
 
 def apply_info_from_rec_dir(row):
     rd1 = row['rec1']
@@ -362,12 +392,6 @@ def apply_info_from_rec_dir(row):
     row['exp_name'] = rec[0]
     row['rec_group'] = rec[-3]
     return row
-
-
-
-
-
-
 
 
 def apply_discrim_and_pal(row, params, save_file, plot_dir):
@@ -538,7 +562,7 @@ def apply_taste_responsive(row, params, data_file):
     step_size = params['response_comparison']['step_size']
     t_end = params['response_comparison']['time_win'][1]
     time, fr, _ = agg.get_firing_rate_trace(rec, unit, ch, bin_size,
-                                            t_start=-bin_size, t_end=bin_size)
+                                            t_start=-bin_size, t_end=t_end)
     f, p = f_oneway(*fr.T)
     if p > alpha:
         return row
@@ -546,22 +570,29 @@ def apply_taste_responsive(row, params, data_file):
     baseline = fr[:,0]
     fr = fr[:,1:]
     fr = [fr[:,i] for i in range(fr.shape[1])]
-    time = time[:,1:]
+    time = time[1:]
     n_bins = len(time)
     # Now use Dunnett's to compare each time bin to baseline
     CIs, pvals = stats.dunnetts_post_hoc(baseline, fr, alpha)
     # Open npz file and append to arrays
     pvals = np.array(pvals)
-    data = np.load(data_file)
-    labels = data['labels']
-    PV = data['pvals']
-    labels.append((row['exp_group'], row['rec_dir'], row['unit_num'],
-                   row['time_group'], row['taste']))
-    PV = np.vstack((PV, pvals))
-    if not np.array_equal(data['time'], time):
-        raise ValueError('Time vectors dont match')
+    this_label = (row['exp_group'], row['rec_dir'], row['unit_num'],
+                  row['time_group'], row['taste'])
 
-    np.savez(data_file, labels=labels, pvals=PV, time=data['time'])
+    if os.path.isfile(data_file):
+        data = np.load(data_file)
+        labels = data['labels']
+        PV = data['pvals']
+        labels = np.vstack((labels, this_label))
+        PV = np.vstack((PV, pvals))
+        if not np.array_equal(data['time'], time):
+            raise ValueError('Time vectors dont match')
+
+    else:
+        labels = np.array(this_label)
+        PV = pvals
+
+    np.savez(data_file, labels=labels, pvals=PV, time=time)
     return row
 
 
@@ -693,8 +724,42 @@ def fix_area(proj):
     return
 
 
+class HmmAnalysis(object):
+    def __init__(self, proj):
+        self.root_dir = os.path.join(proj.root_dir, proj.data_name + '_analysis')
+        self.project = proj
+        save_dir = os.path.join(self.root_dir, 'hmm_analysis')
+        self.save_dir = save_dir
+        self.files = {'params': os.path.join(save_dir, 'hmm_params.json'),
+                      'hmm_overview': os.path.join(save_dir, 'hmm_overview.feather')}
 
+    def fit(self):
+        tmp = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
+               'max_iter': 300, 'n_repeats': 10, 'time_start': 0,
+               'time_end': 2000}
+        params = [{'n_states': i+2, **tmp.copy()} for i in range(4)]
+        save_file = self.files['hmm_overview']
+        fit_df = None
+        for i, row in self.project._exp_info.iterrows():
+            exp = load_experiment(row['exp_dir'])
+            for rec_dir in exp.recording_dirs:
+                dat = load_dataset(rec_dir)
+                units = dat.get_unit_table()
+                units = units[units.single_unit]
+                if len(units) < 4:
+                    continue
+                else:
+                    handler = phmm.HmmHandler(rec_dir)
+                    handler.add_params(params)
+                    handler.run()
+                    df = handler.get_data_overview().copy()
+                    df['rec_dir'] = rec_dir
+                    if fit_df is None:
+                        fit_df = df
+                    else:
+                        fit_df = fit_df.append(df, ignore_index=True)
 
+                feather.write_dataframe(fit_df, save_file)
 
 
 if __name__=="__main__":

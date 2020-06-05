@@ -164,6 +164,8 @@ def plot_held_unit_comparison(rec1, unit1, rec2, unit2, pvals, params,
             ss = '**'
         elif max_p <= 0.05:
             ss = '*'
+        else:
+            continue
 
         axes[0].text(mid, sig_y + 0.1, ss, horizontalalignment='center')
 
@@ -427,19 +429,23 @@ def plot_aggregate_pearson(pal_df, save_file):
 def plot_mean_spearman(data_file, save_file):
     data = np.load(data_file)
     labels = data['labels']
-    spear_rs = data['spearman_rs']
+    spear_rs = data['spearman_r']
     time = data['time']
     exp_groups = np.unique(labels[:,0])
     time_groups = np.unique(labels[:,1])
     df = pd.DataFrame(spear_rs, columns=time)
     df['exp_group'] = labels[:,0]
-    df['time_group'] = label[:,1]
-    df2 = pd.melt(df, id_vars['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
-    g = sns.catplot(df2, x='time', y='R', col='exp_group', row='time_group')
+    df['time_group'] = labels[:,1]
+    df2 = pd.melt(df, id_vars=['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
+    df2['R'] = df2['R'].abs()
+    g = sns.catplot(data=df2, x='time', y='R', col='exp_group',
+                    row='time_group', kind='point', sharex=True, sharey=True)
     g.set_titles('{col_name} - {row_name}')
     g.set_xlabels('Time (ms)')
-    g.set_ylabel("Spearman's R")
-    g._legend.remove()
+    g.set_ylabels("Spearman's R")
+    if g._legend is not None:
+        g._legend.remove()
+
     plt.subplots_adjust(top=0.85)
     g.fig.suptitle('Mean Spearman Correlation')
     g.fig.savefig(save_file)
@@ -449,19 +455,22 @@ def plot_mean_spearman(data_file, save_file):
 def plot_mean_pearson(data_file, save_file):
     data = np.load(data_file)
     labels = data['labels']
-    pear_rs = data['pearson_rs']
+    pear_rs = data['pearson_r']
     time = data['time']
     exp_groups = np.unique(labels[:,0])
     time_groups = np.unique(labels[:,1])
     df = pd.DataFrame(pear_rs, columns=time)
     df['exp_group'] = labels[:,0]
-    df['time_group'] = label[:,1]
-    df2 = pd.melt(df, id_vars['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
-    g = sns.catplot(df2, x='time', y='R', col='exp_group', row='time_group')
+    df['time_group'] = labels[:,1]
+    df2 = pd.melt(df, id_vars=['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
+    g = sns.catplot(data=df2, x='time', y='R', col='exp_group',
+                    row='time_group', kind='point', sharex=True, sharey=True)
     g.set_titles('{col_name} - {row_name}')
     g.set_xlabels('Time (ms)')
-    g.set_ylabel("Pearson's R")
-    g._legend.remove()
+    g.set_ylabels("Pearson's R")
+    if g._legend is not None:
+        g._legend.remove()
+
     plt.subplots_adjust(top=0.85)
     g.fig.suptitle('Mean Pearson Correlation')
     g.fig.savefig(save_file)
@@ -469,7 +478,7 @@ def plot_mean_pearson(data_file, save_file):
 
 
 def plot_taste_response_over_time(dat_file, save_file, alpha):
-    data = np.load(data_file)
+    data = np.load(dat_file)
     labels = data['labels']
     pvals = data['pvals']
     time = data['time']
@@ -484,7 +493,7 @@ def plot_taste_response_over_time(dat_file, save_file, alpha):
     df2 = pd.melt(df, id_vars=['exp_group', 'time_group', 'taste'],
                   value_vars=time, var_name='time', value_name='pval')
     df2['sig'] = df2.pval <= alpha
-    df3 = df2[df2.sig].groupby(['exp_group','time_group','taste'])['sig'].count().reset_index()
+    df3 = df2[df2.sig].groupby(['exp_group','time_group','taste', 'time'])['sig'].count().reset_index()
     for tst in tastes:
         fn = save_file.replace('.svg','-%s.svg' % tst)
         tmp = df3[df3.taste == tst]
@@ -505,6 +514,7 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
     time_start = params['pca']['time_win'][0]
     time_end = params['pca']['time_win'][1]
     smoothing = params['pca']['smoothing_win']
+    n_grps = len(df.time_group.unique())
 
     fig_all = plt.figure()
     fig_mean = plt.figure()
@@ -520,12 +530,15 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
 
         rd1 = rd1[0]
         rd2 = rd2[0]
-        units1 = group['unit1'].unique()
-        units2 = group['unit2'].unique()
+        units1 = list(group['unit1'].unique())
+        units2 = list(group['unit2'].unique())
         dim1 = load_dataset(rd1).dig_in_mapping.set_index('channel')
         dim2 = load_dataset(rd2).dig_in_mapping.set_index('channel')
+        if len(units1) < 3:
+            # No point if only 1 unit
+            continue
 
-        time, sa = sas.get_spike_data(rd1, units1)
+        time, sa = h5io.get_spike_data(rd1, units1)
         spikes = []
         labels = []
         if isinstance(sa, dict):
@@ -534,24 +547,42 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
                 tst = dim1.loc[ch, 'name']
                 l = [tst]*v.shape[0]
                 labels.extend(l)
-                spikes.append(v)
+                # if there is only 1 unit
+                if len(v.shape) == 2:
+                    tmp = np.expand_dims(v, 1)
+                else:
+                     tmp = v
+
+                spikes.append(tmp)
 
         else:
+            if len(sa.shape) == 2:
+                sa = np.expand_dims(sa, 1)
+
             spikes.append(sa)
             l = [dim1.loc[0,'name']]*sa.shape[0]
             labels.extend(l)
 
         # Again with rec2
-        t, sa = sas.get_spike_data(rd2, units2)
+        t, sa = h5io.get_spike_data(rd2, units2)
         if isinstance(sa, dict):
             for k,v in sa.items():
                 ch = int(k.split('_')[-1])
                 tst = dim2.loc[ch, 'name']
                 l = [tst]*v.shape[0]
                 labels.extend(l)
-                spikes.append(v)
+                # if there is only 1 unit
+                if len(v.shape) == 2:
+                    tmp = np.expand_dims(v, 1)
+                else:
+                     tmp = v
+
+                spikes.append(tmp)
 
         else:
+            if len(sa.shape) == 2:
+                sa = np.expand_dims(sa, 1)
+
             spikes.append(sa)
             l = [dim2.loc[0,'name']]*sa.shape[0]
             labels.extend(l)
@@ -585,13 +616,13 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
         pc_means = {}
         for i, t in enumerate(bin_time):
             pc = pca.transform(firing_rate[:,:,i])
-            tmp = [(i, x, y, z) for x,y,z in pc]
-            tmp = [(l, *x) for l,x in zip(labels,tmp)]
-            pc_data.extend(tmp)
+            pc_tuples = [(i, x, y, z) for x,y,z in pc]
+            pc_tuples = [(l, *x) for l,x in zip(labels, pc_tuples)]
+            pc_data.extend(pc_tuples)
 
             for tst in np.unique(labels):
                 idx = np.where(labels == tst)[0]
-                tmp = [(x,y,z) for _,_,x,y,z in tmp]
+                tmp = [(x,y,z) for _,_,x,y,z in pc_tuples]
                 tmp = np.array(tmp)
                 tmp = tmp[idx, :]
                 tmp = np.mean(tmp, axis=0)
@@ -602,8 +633,8 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
 
         # Now pc_data is a list of tuples with (taste, time_idx, x, y, z) in PC
         # space
-        ax_all = fig_all.add_subplot(1, 2, plt_i, projection='3d')
-        ax_mean = fig_mean.add_subplot(1,2,plt_i, projection='3d')
+        ax_all = fig_all.add_subplot(1, n_grps, plt_i, projection='3d')
+        ax_mean = fig_mean.add_subplot(1, n_grps, plt_i, projection='3d')
         for tst, t, x, y, z in pc_data:
             ax_all.scatter(x,y,z,marker='o', color=colors[tst], alpha=0.6, label=tst)
 
