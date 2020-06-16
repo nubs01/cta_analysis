@@ -6,6 +6,7 @@ import feather
 import aggregation as agg
 import plotting as plt
 import statistics as stats
+import population_analysis as pop
 from scipy.stats import mannwhitneyu, spearmanr, sem, f_oneway, rankdata, pearsonr, ttest_ind
 from blechpy import load_project, load_dataset, load_experiment
 from blechpy.plotting import data_plot as dplt
@@ -14,6 +15,7 @@ from blechpy.analysis import spike_analysis as sas, poissonHMM as phmm
 from blechpy.dio import h5io
 from scipy.stats import sem
 from blechpy.utils import write_tools as wt
+import pylab as pyplt
 
 ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 750, 'alpha': 0.05},
                    'pal_responsive': {'win_size': 250, 'step_size': 25,
@@ -323,15 +325,22 @@ class ProjectAnalysis(object):
         alpha = params['taste_responsive']['alpha']
         plt.plot_taste_response_over_time(resp_data, resp_time, alpha)
 
-    def pca_analysis(self):
+    def pca_analysis(self, overwrite=False):
         '''Grab units held across pre OR post. For each animal do pca on firing
         rate traces, then plot for individual traces and mean trace for each
         taste. 1 plot per animal, pre & post subplot
         '''
         save_dir = os.path.join(self.save_dir, 'pca_analysis')
+        pc_data_file = os.path.join(save_dir, 'pc_data.feather')
+        dist_data_file = os.path.join(save_dir, 'pc_dist_data.feather')
         if not os.path.isdir(save_dir):
             os.mkdir(save_dir)
 
+        if os.path.isfile(pc_data_file) and os.path.isfile(dist_data_file) and not overwrite:
+            pc_data = feather.read_dataframe(pc_data_file)
+            dist_data = feather.read_dataframe(dist_data_file)
+            return pc_data, dist_data
+
         params = self.get_params()
         all_units, held_units = self.get_unit_info()
         all_units = all_units.dropna(subset=['held_unit_name'])
@@ -340,53 +349,37 @@ class ProjectAnalysis(object):
         held_units = held_units.dropna(subset=['held_unit_name'])
         held_units = held_units[held_units['held_unit_name'].isin(unit_names)]
         held_units = held_units.apply(apply_info_from_rec_dir, axis=1)
-        held_units = held_units[held_units['held_over'] != 'cta']
+        held_units = held_units.dropna(subset=['time_group'])
         unit_names = held_units['held_unit_name'].unique()
         all_units = all_units[all_units.held_unit_name.isin(unit_names)]
         # Now all_units and held_units have only units that are held over one
         # half of the experiment and are in GC
-        for name, group in held_units.groupby(['exp_name']):
-            fn = os.path.join(save_dir, '%s_pca_analysis.svg' % name)
-            plt.plot_pca_traces(group, params, fn, exp_name=name)
+        grp = held_units.groupby(['exp_name', 'time_group'])
+        pc_data = grp.apply(lambda x: pop.apply_pca_analysis(x, params)).reset_index()
+        grp = pc_data.groupby(['exp_name', 'time_group', 'time'])
+        dist_data = grp.apply(pop.apply_pc_distances).reset_index()
+        feather.write_dataframe(pc_data, pc_data_file)
+        feather.write_dataframe(dist_data, dist_data_file)
+        return pc_data, dist_data
 
-    def mds_analysis(self):
-        '''Grab units held across pre OR post. For each animal do MDS on firing
-        rates in first half and second half of response, then plot 2D MDS
-        represenation for pre & post. Early and late on same axes. Same MDS
-        distance matrices between tastes.
-        '''
-        save_dir = os.path.join(self.save_dir, 'mds_analysis')
-        params = self.get_params()
+    def plot_pca_data(self):
+        pass
 
-        # Grab and make relevant dataFrames
-        all_units, held_units = self.get_unit_info()
-        all_units = all_units.dropna(subset=['held_unit_name'])
-        all_units = all_units.query('area == "GC"')
-        unit_names = all_units.held_unit_name.unique()
-        held_units = held_units.dropna(subset=['held_unit_name'])
-        held_units = held_units[held_units['held_unit_name'].isin(unit_names)]
-        held_units = held_units.apply(apply_info_from_rec_dir, axis=1)
-        held_units = held_units[held_units['held_over'] != 'cta']
-        unit_names = held_units['held_unit_name'].unique()
-        all_units = all_units[all_units.held_unit_name.isin(unit_names)]
-        # Now all_units and held_units have only units that are held over one
-        # half of the experiment and are in GC
-        for name, group in held_units.groupby(['exp_name']):
-            fn = os.path.join(save_dir, '%s_mds_analysis.svg' % name)
-            plt.plot_mds(group, params, fn, exp_name=name)
 
 def apply_info_from_rec_dir(row):
     rd1 = row['rec1']
     rd2 = row['rec2']
-    if 'preCTA' in rd1 and 'Train' in rd2:
+    if 'pre' in rd1 and 'Train' in rd2:
         row['held_over'] = 'pre'
         row['time_group'] = 'preCTA'
-    elif 'postCTA' in rd1 and 'Test' in rd2:
+    elif 'Test' in rd1 and 'post' in rd2:
         row['held_over'] = 'post'
         row['time_group'] = 'postCTA'
-    else:
+    elif 'Train' in rd1 and 'Test' in rd2:
         row['held_over'] = 'cta'
         row['time_group'] = None
+    else:
+        raise ValueError('Doesnt fit into group')
 
     rec = os.path.basename(rd1).split('_')
     row['exp_name'] = rec[0]
@@ -730,6 +723,9 @@ class HmmAnalysis(object):
         self.project = proj
         save_dir = os.path.join(self.root_dir, 'hmm_analysis')
         self.save_dir = save_dir
+        if not os.path.isdir(save_dir):
+            os.makedirs(save_dir)
+
         self.files = {'params': os.path.join(save_dir, 'hmm_params.json'),
                       'hmm_overview': os.path.join(save_dir, 'hmm_overview.feather')}
 
@@ -760,6 +756,7 @@ class HmmAnalysis(object):
                         fit_df = fit_df.append(df, ignore_index=True)
 
                 feather.write_dataframe(fit_df, save_file)
+                pyplt.close('all')
 
 
 if __name__=="__main__":

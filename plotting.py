@@ -438,14 +438,12 @@ def plot_mean_spearman(data_file, save_file):
     df['time_group'] = labels[:,1]
     df2 = pd.melt(df, id_vars=['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
     df2['R'] = df2['R'].abs()
-    g = sns.catplot(data=df2, x='time', y='R', col='exp_group',
-                    row='time_group', kind='point', sharex=True, sharey=True)
-    g.set_titles('{col_name} - {row_name}')
+    g = sns.catplot(data=df2, x='time', y='R', row='exp_group',
+                    hue='time_group', kind='point', sharex=True, sharey=True)
+    g.set_titles('{row_name}')
     g.set_xlabels('Time (ms)')
     g.set_ylabels("Spearman's R")
-    if g._legend is not None:
-        g._legend.remove()
-
+    g.fig.set_size_inches(15,10)
     plt.subplots_adjust(top=0.85)
     g.fig.suptitle('Mean Spearman Correlation')
     g.fig.savefig(save_file)
@@ -463,13 +461,12 @@ def plot_mean_pearson(data_file, save_file):
     df['exp_group'] = labels[:,0]
     df['time_group'] = labels[:,1]
     df2 = pd.melt(df, id_vars=['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
-    g = sns.catplot(data=df2, x='time', y='R', col='exp_group',
-                    row='time_group', kind='point', sharex=True, sharey=True)
-    g.set_titles('{col_name} - {row_name}')
+    g = sns.catplot(data=df2, x='time', y='R', row='exp_group',
+                    hue='time_group', kind='point', sharex=True, sharey=True)
+    g.set_titles('{row_name}')
     g.set_xlabels('Time (ms)')
     g.set_ylabels("Pearson's R")
-    if g._legend is not None:
-        g._legend.remove()
+    g.fig.set_size_inches(15, 10)
 
     plt.subplots_adjust(top=0.85)
     g.fig.suptitle('Mean Pearson Correlation')
@@ -494,14 +491,19 @@ def plot_taste_response_over_time(dat_file, save_file, alpha):
                   value_vars=time, var_name='time', value_name='pval')
     df2['sig'] = df2.pval <= alpha
     df3 = df2[df2.sig].groupby(['exp_group','time_group','taste', 'time'])['sig'].count().reset_index()
+    def get_perc(grp):
+        return 100*grp.sum()/len(grp)
+
+    df4 = df2.groupby(['exp_group','time_group','taste', 'time'])['sig'].apply(get_perc).reset_index()
     for tst in tastes:
         fn = save_file.replace('.svg','-%s.svg' % tst)
-        tmp = df3[df3.taste == tst]
-        g = sns.catplot(data=tmp, x='time', y='sig', hue='time_group', col='exp_group', kind='bar')
-        g.set_titles('{col_name}')
-        g.set_ylabels('# of taste responsive cells')
+        tmp = df4[df4.taste == tst]
+        g = sns.catplot(data=tmp, x='time', y='sig', hue='time_group', row='exp_group', kind='point')
+        g.set_titles('{row_name}')
+        g.set_ylabels('% taste responsive cells')
         g.set_xlabels('Time (ms)')
         g._legend.set_title('')
+        g.fig.set_size_inches(15,10)
         plt.subplots_adjust(top=0.85)
         g.fig.suptitle('Taste Responsive - %s' % tst)
         g.fig.savefig(fn)
@@ -516,8 +518,8 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
     smoothing = params['pca']['smoothing_win']
     n_grps = len(df.time_group.unique())
 
-    fig_all = plt.figure()
-    fig_mean = plt.figure()
+    fig_all = plt.figure(figsize=(20,15))
+    fig_mean = plt.figure(figsize=(20,15))
     plt_i = 0
     colors = {'Saccharin': 'tab:purple', 'Quinine': 'tab:red', 'NaCl':
               'tab:green', 'Citric Acid': 'tab:orange', 'Water': 'tab:blue'}
@@ -534,8 +536,9 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
         units2 = list(group['unit2'].unique())
         dim1 = load_dataset(rd1).dig_in_mapping.set_index('channel')
         dim2 = load_dataset(rd2).dig_in_mapping.set_index('channel')
-        if len(units1) < 3:
+        if len(units1) < 2:
             # No point if only 1 unit
+            print('Not enough units for PCA analysis')
             continue
 
         time, sa = h5io.get_spike_data(rd1, units1)
@@ -608,7 +611,7 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
 
         # Do PCA on all data, put in (trials*time)xcells 2D matrix
         pca_data = np.zeros((n_trials, n_units, n_bins))
-        pca = PCA(n_components=3)
+        pca = PCA(n_components=2)
         fr = np.split(firing_rate, n_bins, axis=-1)
         fr = np.vstack(fr).squeeze()
         pca.fit(fr)
@@ -633,14 +636,14 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
 
         # Now pc_data is a list of tuples with (taste, time_idx, x, y, z) in PC
         # space
-        ax_all = fig_all.add_subplot(1, n_grps, plt_i, projection='3d')
-        ax_mean = fig_mean.add_subplot(1, n_grps, plt_i, projection='3d')
+        ax_all = fig_all.add_subplot(1, n_grps, plt_i)
+        ax_mean = fig_mean.add_subplot(1, n_grps, plt_i)
         for tst, t, x, y, z in pc_data:
             ax_all.scatter(x,y,z,marker='o', color=colors[tst], alpha=0.6, label=tst)
 
         for tst in np.unique(labels):
             dat = np.vstack(pc_means[tst])
-            ax_mean.scatter(dat[:,0], dat[:,1], dat[:,2], marker='o', color=colors[tst], label=tst)
+            ax_mean.plot(dat[:,0], dat[:,1], dat[:,2], marker='o', color=colors[tst], label=tst)
 
         ax_all.set_title(name)
         ax_mean.set_title(name)
@@ -654,3 +657,22 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
     fig_mean.savefig(save_file.replace('.svg','-mean.svg'))
     plt.close(fig_all)
     plt.close(fig_mean)
+
+
+def plot_pca_distances(df, save_dir):
+    '''plot NaCl-Sacc distance vs Quinine-Sacc distance, hue = time_group, row
+    = exp_group
+    also plot 
+    
+    Parameters
+    ----------
+    
+    
+    Returns
+    -------
+    
+    
+    Raises
+    ------
+    
+    '''
