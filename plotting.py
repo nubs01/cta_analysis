@@ -6,12 +6,21 @@ import pylab as plt
 from scipy.ndimage.filters import gaussian_filter1d
 from sklearn.decomposition import PCA
 from blechpy import load_dataset, load_experiment, load_project
-from blechpy.dio import h5io
-from blechpy.plotting import data_plot as dplt
-from blechpy.analysis import spike_analysis as sas
+from blechpy.dio import h5io, hmmIO
+from blechpy.plotting import data_plot as dplt, hmm_plot as hplt
+from blechpy.analysis import spike_analysis as sas, poissonHMM as phmm
 from scipy.stats import sem
 import aggregation as agg
+import analysis_stats as stats
+from matplotlib.lines import Line2D
+from matplotlib.patches import Ellipse, Patch
+import matplotlib.colors as mc
+import colorsys
 
+
+TASTE_COLORS = {'Saccharin': 'tab:purple', 'Quinine': 'tab:red',
+                'NaCl': 'tab:green', 'Citric Acid': 'tab:orange',
+                'Water': 'tab:blue'}
 
 def plot_unit_waveforms(rec_dir, unit, ax=None, save_file=None):
     if ax is None:
@@ -41,6 +50,7 @@ def plot_unit_waveforms(rec_dir, unit, ax=None, save_file=None):
         return None
     else:
         return fig, ax
+
 
 def plot_held_units(all_units, save_dir):
     held_units = all_units[all_units['held_unit_name'].notnull()]
@@ -102,9 +112,9 @@ def plot_held_unit_comparison(rec1, unit1, rec2, unit2, pvals, params,
                                            baseline_win=baseline_win,
                                            remove_baseline=True)
 
-    pt1, psth1 = agg.get_psth(rec1, unit1, ch1, params)
+    pt1, psth1, _ = agg.get_psth(rec1, unit1, ch1, params)
 
-    pt2, psth2 = agg.get_psth(rec2, unit2, ch2, params)
+    pt2, psth2, _ = agg.get_psth(rec2, unit2, ch2, params)
 
     fig = plt.figure(figsize=(8, 11))
     ax = fig.add_subplot('111')
@@ -213,15 +223,107 @@ def plot_held_unit_comparison(rec1, unit1, rec2, unit2, pvals, params,
         return fig, axes
 
 
-def plot_held_percent_changed(labels, time, pvals, diff_time, mean_diffs, sem_diffs, alpha, taste, save_file=None):
+def plot_mean_differences_heatmap(labels, time, mean_diffs, ax=None, cbar=True,
+                                  save_file=None, taste=None, t_start=None, t_end=None):
+    #labels: exp_group, exp_name, held_unit_name, taste
+    tastes = np.unique(labels[:,-1])
+    if t_start is not None:
+        idx = np.where(time >= t_start)[0]
+        time = time[idx]
+        mean_diffs = mean_diffs[:,idx]
+
+    if t_end is not None:
+        idx = np.where(time <= t_end)[0]
+        time = time[idx]
+        mean_diffs = mean_diffs[:,idx]
+
+    if ax is not None and taste is not None:
+        idx = np.where(labels[:,-1] == taste)[0]
+        labels = labels[idx,:]
+        mean_diffs = mean_diffs[idx,:]
+        # split into groups, sort by peak time and absolute value and normalize
+        # each row to max
+        groups = np.unique(labels[:,0])
+        plot_dat = []
+        mask = []
+        ylabels = []
+        for gi, grp in enumerate(groups):
+            idx = np.where(labels[:,0] == grp)[0]
+            tmp = np.abs(mean_diffs[idx,:])
+            maxes = np.max(tmp, axis=1)
+            tmp = np.array([x/y for x,y in zip(tmp, maxes)])
+            peaks = np.argmax(tmp, axis=1)
+            sort_idx = np.argsort(peaks)
+            tmp = tmp[sort_idx,:]
+            plot_dat.append(tmp)
+            mask.append(np.zeros_like(tmp, dtype=bool))
+            yls = np.array(['']*(tmp.shape[0]+1), dtype=object)
+            if gi < len(groups)-1:
+                blank = np.zeros((1, len(time)))
+                plot_dat.append(blank)
+                mask.append(np.ones_like(blank, dtype=bool))
+            else:
+                yls = yls[:-1]
+
+            mid = int(tmp.shape[0]/2)
+            yls[mid] = grp
+            ylabels.append(yls)
+
+        plot_dat = np.vstack(plot_dat)
+        # Trying smoothing for visualization
+        plot_dat = np.array([gaussian_filter1d(x, 3) for x in plot_dat])
+        mask = np.vstack(mask)
+        ylabels = np.concatenate(ylabels)
+        plot_df = pd.DataFrame(plot_dat, columns=time)
+        g = sns.heatmap(plot_df, mask=mask, rasterized=True,
+                        ax=ax, robust=True,
+                        yticklabels=ylabels, cbar=cbar)
+        ax.set_xlabel('Time (ms)')
+        ax.set_ylabel('Cell #')
+        ax.set_title(taste)
+        fig = ax.figure
+    else:
+        fig, axes = plt.subplots(ncols=len(tastes), figsize=(9*len(tastes), 11))
+        if len(tastes) == 1:
+            axes = [axes]
+
+        for tst, ax in zip(tastes, axes):
+            if not ax.is_last_col() or cbar == False:
+                cb=False
+            else:
+                cb=True
+
+            plot_mean_differences_heatmap(labels, time, mean_diffs, ax=ax, taste=tst, cbar=cb)
+
+        fig.subplots_adjust(top = 0.85)
+        fig.suptitle('Held unit response changes')
+
+    if save_file is None:
+        return fig
+    else:
+        fig.savefig(save_file)
+        plt.close(fig)
+
+
+def plot_held_percent_changed(labels, time, pvals, diff_time, mean_diffs,
+                              sem_diffs, alpha, taste, group_pvals=None,
+                              save_file=None):
+    # Labels: exp_group, exp_name, held_unit_name, taste
     groups = np.unique(labels[:, 0])
     Ngrp = len(groups)
     # Pad time for proper plotting
+    # time is currently bin centers
     t_step = np.unique(np.diff(time))[0]
     time = np.array([*time, time[-1]+t_step])
     # Shift times to be bin starts
     time = time - t_step/2
     plot_win = [time[0], time[-1]]
+    # Truncate diffs to match time window of pvals
+    if time[0] != diff_time[0] or time[-1] != diff_time[-1]:
+        idx = np.where((diff_time >= time[0]) & (diff_time <= time[-1]))[0]
+        diff_time = diff_time[idx]
+        mean_diffs = mean_diffs[:, idx]
+        sem_diffs = sem_diffs[:,idx]
 
     fig = plt.figure(figsize=(20, 12))
     outer_ax = fig.add_subplot('121')
@@ -251,20 +353,41 @@ def plot_held_percent_changed(labels, time, pvals, diff_time, mean_diffs, sem_di
         p = pvals[idx, :]
         meanD = mean_diffs[idx, :]
         semD = sem_diffs[idx, :]
-        n_diff = np.sum(p <= alpha, axis=0)
+        n_sig = (p <= alpha).astype('int')
+        n_diff, l_diff, u_diff = stats.bootstrap(n_sig, alpha=alpha, func=np.sum)
         if N == 0:
             print('No units for group: ' + grp)
             continue
+
         # pad array end for proper plotting
         n_diff = np.array([*n_diff, n_diff[-1]])
         perc_sig = 100 * n_diff / N
         ax.step(time, perc_sig, where='post')
+        for i, (ld, ud) in enumerate(zip(l_diff, u_diff)):
+            ax.plot([time[i]+t_step/2]*2, [100*ld/N, 100*ud/N], color='k',
+                    alpha=0.6, linewidth=2)
+
+            if group_pvals is not None:
+                tmp_p = group_pvals[i]
+                if tmp_p > alpha:
+                    continue
+
+                if tmp_p < 0.001:
+                    ss= '***'
+                elif tmp_p < 0.01:
+                    ss = '**'
+                else:
+                    ss = '*'
+
+                ax.text(time[i]+t_step/2, 100*ud/N + 2.5, ss, horizontalalignment='center')
+
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
         x = np.max(xlim) - 150
         y = np.max(ylim) - 0.1 * np.diff(ylim)
         ax.text(x, y, '%s; N = %i' % (grp, N), horizontalalignment='right', fontsize=14)
         ax.set_xlim(plot_win)
+        ax.set_ylim([np.min(ylim), np.max(ylim)+5])
 
         MD = np.mean(np.abs(meanD), axis=0)
         semD = np.sqrt(np.sum(np.power(semD, 2), axis=0))
@@ -291,7 +414,7 @@ def plot_PSTHs(rec, unit, params, save_file):
     fig, ax = plt.subplots(figsize=(15,10))
     for taste, row in dim.iterrows():
         ch = row['channel']
-        pt, psth = agg.get_psth(rec, unit, ch, params)
+        pt, psth, _ = agg.get_psth(rec, unit, ch, params)
         mp = np.mean(psth, axis=0)
         sp = sem(psth, axis=0)
         ax.plot(pt, mp, linewidth=3, label=taste)
@@ -314,6 +437,7 @@ def plot_PSTHs(rec, unit, params, save_file):
     fig.savefig(save_file)
     plt.close(fig)
     return
+
 
 def plot_palatability_correlation(rec_name, unit_name, time, spearman_r, spearman_p,
                                   pearson_r, pearson_p, save_file):
@@ -366,6 +490,7 @@ def plot_taste_responsive(resp_df, save_file):
     plt.close(g.fig)
     return
 
+
 def plot_taste_discriminative(pal_df, save_file):
     tmp_grp = pal_df.groupby(['exp_group', 'time_group'])['taste_discriminative']
     df = tmp_grp.apply(lambda x: 100*np.sum(x)/len(x)).reset_index()
@@ -379,6 +504,7 @@ def plot_taste_discriminative(pal_df, save_file):
     fig.savefig(save_file)
     plt.close(fig)
     return
+
 
 def plot_aggregate_spearman(pal_df, save_file):
     n_grp = len(pal_df.exp_group.unique())
@@ -438,8 +564,11 @@ def plot_mean_spearman(data_file, save_file):
     df['time_group'] = labels[:,1]
     df2 = pd.melt(df, id_vars=['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
     df2['R'] = df2['R'].abs()
-    g = sns.catplot(data=df2, x='time', y='R', row='exp_group',
-                    hue='time_group', kind='point', sharex=True, sharey=True)
+    g = sns.FacetGrid(data=df2, row='exp_group', hue='time_group',
+                      hue_order=['preCTA', 'postCTA'], sharex=True, sharey=False)
+    g.map(sns.lineplot, 'time', 'R', markers=True)
+    #g = sns.catplot(data=df2, x='time', y='R', row='exp_group',
+    #                hue='time_group', kind='point', sharex=True, sharey=False)
     g.set_titles('{row_name}')
     g.set_xlabels('Time (ms)')
     g.set_ylabels("Spearman's R")
@@ -461,8 +590,11 @@ def plot_mean_pearson(data_file, save_file):
     df['exp_group'] = labels[:,0]
     df['time_group'] = labels[:,1]
     df2 = pd.melt(df, id_vars=['exp_group','time_group'], value_vars=time, var_name='time', value_name='R')
-    g = sns.catplot(data=df2, x='time', y='R', row='exp_group',
-                    hue='time_group', kind='point', sharex=True, sharey=True)
+    g = sns.FacetGrid(data=df2, row='exp_group', hue='time_group',
+                      hue_order=['preCTA', 'postCTA'], sharex=True, sharey=False)
+    g.map(sns.lineplot, 'time', 'R', markers=True)
+    # g = sns.catplot(data=df2, x='time', y='R', row='exp_group',
+    #                 hue='time_group', kind='point', sharex=True, sharey=False)
     g.set_titles('{row_name}')
     g.set_xlabels('Time (ms)')
     g.set_ylabels("Pearson's R")
@@ -521,8 +653,7 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
     fig_all = plt.figure(figsize=(20,15))
     fig_mean = plt.figure(figsize=(20,15))
     plt_i = 0
-    colors = {'Saccharin': 'tab:purple', 'Quinine': 'tab:red', 'NaCl':
-              'tab:green', 'Citric Acid': 'tab:orange', 'Water': 'tab:blue'}
+    colors = TASTE_COLORS.copy()
     for name, group in df.groupby('time_group'):
         plt_i += 1
         rd1 = group['rec1'].unique()
@@ -662,17 +793,591 @@ def plot_pca_traces(df, params, save_file, exp_name=None):
 def plot_pca_distances(df, save_dir):
     '''plot NaCl-Sacc distance vs Quinine-Sacc distance, hue = time_group, row
     = exp_group
-    also plot 
-    
+    also plot
+
     Parameters
     ----------
-    
-    
+
+
     Returns
     -------
-    
-    
+
+
     Raises
     ------
-    
+
     '''
+    scatter_file = os.path.join(save_dir, 'PC_Distances.svg')
+    hist_file = os.path.join(save_dir, 'PC_Distances-Histogram.svg')
+    if not os.path.isdir(save_dir):
+        os.makedirs(save_dir)
+
+    animals = df.exp_name.unique()
+    n_anim = len(animals)
+    time_groups = list(df.time_group.unique())
+    rows = list(df.exp_group.unique())
+    cols = list(df.time.unique())
+    n_cols = len(rows)
+    n_rows = len(cols)
+    colors = {a: c for a,c in zip(animals, sns.color_palette('bright', n_anim))}
+    tmp_shapes = list('o^sDpP*X8')
+    shapes = {a: c for a,c in zip(time_groups, tmp_shapes)}
+
+    s_fig = plt.figure(figsize=(16,10))
+    add_suplabels(s_fig, 'PCA Distances', 'Sacc -- Quinine', 'Sacc -- NaCl')
+    limits = {i: {'xlim': [df.pc_dist.max(), df.pc_dist.min()],
+                  'ylim': [df.pc_dist.max(), df.pc_dist.min()]} for i in range(n_rows*n_cols)}
+    axes = [s_fig.add_subplot(n_rows, n_cols, i+1) for i in range(n_rows*n_cols)]
+    new_data = []
+
+    # make custom legend from colors and shapes dictionaries
+    for name, group in df.groupby(['exp_group', 'time', 'exp_name', 'time_group']):
+        r_grp = name[0]
+        c_grp = name[1]
+        anim = name[2]
+        time = name[3]
+        plt_i = (cols.index(c_grp)) + (n_cols * rows.index(r_grp))
+        ax = axes[plt_i]
+        plt_color = colors[anim]
+        plt_shape = shapes[time]
+        dNaCl = group[group.taste_1.isin(['Saccharin', 'NaCl']) &
+                      group.taste_2.isin(['Saccharin', 'NaCl'])]
+        dQ = group[group.taste_1.isin(['Saccharin', 'Quinine']) &
+                   group.taste_2.isin(['Saccharin', 'Quinine'])]
+        if len(dNaCl) > 1 or len(dQ) > 1:
+            raise ValueError('Too many points')
+
+        # For each animal plot dQ vs dNaCl, dot at mean and oval for error
+        xlim = limits[plt_i]['xlim']
+        ylim = limits[plt_i]['ylim']
+        for i, nacl in dNaCl.iterrows():
+            for j, quin in dQ.iterrows():
+                x = quin['pc_dist']
+                dx = quin['pc_dist_sem']
+                y = nacl['pc_dist']
+                dy = nacl['pc_dist_sem']
+                e = Ellipse((x,y), 2*dx, 2*dy, color=plt_color, alpha=0.4)
+                ax.add_patch(e)
+                ax.plot(x, y, color=plt_color, marker=plt_shape)
+                if xlim[0] > x-dx:
+                    xlim[0] = x-dx
+
+                if xlim[1] < x+dx:
+                    xlim[1] = x+dx
+
+                if ylim[0] > y-dy:
+                    ylim[0] = y-dy
+
+                if ylim[1] < y+dy:
+                    ylim[1] = y+dy
+
+                new_data.append((r_grp, c_grp, anim, time, x/y, np.abs(x/y) * ((dx/x)**2 + (dy/y)**2)**0.5))
+
+        if cols.index(c_grp) == 0:
+            tmp = ax.get_position()
+            s_fig.text(0.05, (tmp.ymax + tmp.ymin)/2, r_grp, fontsize=18, fontweight='bold')
+
+        if rows.index(r_grp) == 0:
+            ax.set_title(c_grp, pad=10)
+
+        limits[plt_i]['xlim'] = xlim
+        limits[plt_i]['ylim'] = ylim
+
+    s_fig.subplots_adjust(left=0.15, right=0.9)
+    for i, ax in enumerate(axes):
+        xlim = limits[i]['xlim']
+        ylim = limits[i]['ylim']
+        xs = np.diff(xlim) * 0.05
+        ys = np.diff(ylim) * 0.05
+        xlim[0] -= xs
+        xlim[1] += xs
+        ylim[0] -= ys
+        ylim[1] += ys
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+
+    # make Legend
+    handles = []
+    for k,v in shapes.items():
+        item = Line2D([], [], marker=v, color='k', linewidth=0, label=k)
+        handles.append(item)
+
+    for k, v in colors.items():
+        item = Patch(color=v, label=k)
+        handles.append(item)
+
+    s_fig.legend(handles=handles, loc='center right')
+    s_fig.savefig(scatter_file)
+    plt.close(s_fig)
+
+    new_df = pd.DataFrame(new_data, columns=['exp_group', 'time',
+                                             'exp_name', 'time_group', 'dQ_v_dN',
+                                             'dQ_v_dN_std'])
+    g = sns.FacetGrid(data=new_df, col='time', row='exp_group', hue='time_group', sharex=False, sharey=False)
+    g.map(sns.distplot, 'dQ_v_dN')
+    # g = sns.catplot(data=new_df, hue='time_group', col='exp_group', x='time',
+    #                 y='dQ_v_dN', kind='violin')
+    g.add_legend()
+    g.fig.set_size_inches(16, 10)
+    g.set_titles('{row_name}: {col_name}')
+    g.set_xlabels('d$_Q$/d$_{NaCl}$')
+    # g.set_xlabels('Post-stimulus response time')
+    # g.fig.subplots_adjust(left=0.15)
+    # for ax,_ in g.axes:
+    #     tmp = ax.get_position()
+    #     s_fig.text(0.05, (tmp.ymax + tmp.ymin)/2, r_grp, fontsize=18, fontweight='bold')
+
+    g.fig.savefig(hist_file)
+    plt.close(g.fig)
+
+    # TODO: Plot histogram of distance from each saccharin trial to mean Qunine / distance to mean NaCl
+
+
+def plot_pca_metric(df, save_file):
+    # grouping: exp_group, exp_name, time_group, time, trial
+    g = sns.catplot(data=df, x='exp_group', hue='time_group', col='time',
+                    y='PC_dQ_v_dN', kind='bar',
+                    hue_order=['preCTA', 'postCTA'],
+                    col_order=['Early (0-750ms)', 'Late (750-1500ms)'])
+    g.set_titles('{col_name}')
+    g.set_ylabels('d(Sacc, Q)/d(Sacc, NaCl)')
+    g.fig.set_size_inches((16,10))
+    plt.close(g.fig)
+    g.fig.savefig(save_file)
+
+
+def plot_mds_metric(df, save_file):
+    # grouping: exp_group, exp_name, time_group, time, trial
+    g = sns.catplot(data=df, x='exp_group', hue='time_group', col='time',
+                    y='MDS_dQ_v_dN', kind='bar',
+                    hue_order=['preCTA', 'postCTA'],
+                    col_order=['Early (0-750ms)', 'Late (750-1500ms)'])
+    g.set_titles('{col_name}')
+    g.set_ylabels('d(Sacc, Q)/d(Sacc, NaCl)')
+    g.fig.set_size_inches((16,10))
+    plt.close(g.fig)
+    g.fig.savefig(save_file)
+
+def plot_animal_pca(df, save_dir):
+    if not os.path.isdir(save_dir):
+        os.makedirs(save_dir)
+
+    for name, grp in df.groupby(['exp_name']):
+        fn = os.path.join(save_dir, '%s_pca_analysis.svg' % name)
+        g = sns.FacetGrid(data=grp, col='time_group', hue='taste', row='time', sharex=True, col_order=['preCTA', 'postCTA'])
+        g.map(sns.scatterplot,'PC1', 'PC2')
+        g.add_legend()
+        g.fig.set_size_inches(16,10)
+        g.set_titles('{row_name} : {col_name}')
+        g.fig.savefig(fn)
+        plt.close(g.fig)
+
+        n_grps = len(grp.time_group.unique())
+        fig, axes = plt.subplots(ncols=n_grps, figsize=(16,7))
+        fn = os.path.join(save_dir, '%s_mean_pca.svg' % name)
+        for time_group, tmp in grp.groupby('time_group'):
+            if n_grps == 1:
+                ax = axes
+            elif time_group == 'preCTA':
+                ax = axes[0]
+            else:
+                ax = axes[1]
+
+            means = tmp.groupby(['taste', 'time'])[['PC1','PC2']].mean().reset_index()
+            g = sns.scatterplot(data=means, hue='taste', style='time', ax=ax, x='PC1', y='PC2')
+            g.set_title(time_group)
+
+        g.legend()
+        fig.savefig(fn)
+        plt.close(fig)
+
+
+def plot_animal_mds(df, save_dir):
+    if not os.path.isdir(save_dir):
+        os.makedirs(save_dir)
+
+    for name, grp in df.groupby(['exp_name']):
+        fn = os.path.join(save_dir, '%s_mds_analysis.svg' % name)
+        g = sns.FacetGrid(data=grp, col='time_group', hue='taste', row='time', sharex=True, col_order=['preCTA', 'postCTA'])
+        g.map(sns.scatterplot,'MDS1', 'MDS2')
+        g.add_legend()
+        g.fig.set_size_inches(16,10)
+        g.set_titles('{row_name} : {col_name}')
+        g.fig.savefig(fn)
+        plt.close(g.fig)
+
+        n_grps = len(grp.time_group.unique())
+        fig, axes = plt.subplots(ncols=n_grps, figsize=(16,7))
+        fn = os.path.join(save_dir, '%s_mean_mds.svg' % name)
+        for time_group, tmp in grp.groupby('time_group'):
+            if n_grps == 1:
+                ax = axes
+            elif time_group == 'preCTA':
+                ax = axes[0]
+            else:
+                ax = axes[1]
+
+            means = tmp.groupby(['taste', 'time'])[['MDS1','MDS2']].mean().reset_index()
+            g = sns.scatterplot(data=means, hue='taste', style='time', ax=ax, x='MDS1', y='MDS2')
+            g.set_title(time_group)
+
+        g.legend()
+        fig.savefig(fn)
+        plt.close(fig)
+
+
+
+def add_suplabels(fig, title, xlabel, ylabel):
+    ax = fig.add_subplot('111')
+    ax.spines['top'].set_color('none')
+    ax.spines['bottom'].set_color('none')
+    ax.spines['left'].set_color('none')
+    ax.spines['right'].set_color('none')
+    ax.tick_params(labelcolor='w', top=False, bottom=False, left=False, right=False)
+    ax.set_xlabel(xlabel, labelpad=10)
+    ax.set_ylabel(ylabel, labelpad=10)
+    ax.set_title(title, pad=40)
+    return ax
+
+
+def plot_state_breakdown(df, save_dir):
+    plot_vars = ['t_end', 't_start', 'duration', 'cost']
+    id_vars = ['rec_dir', 'exp_name', 'exp_group', 'time_group', 'rec_group',
+               'rec_name', 'whole_trial', 'ordered_state',
+               'trial_ordered_state', 'n_states', 'trial', 'n_cells', 'taste']
+    new_df = pd.melt(df, id_vars=id_vars, value_vars=plot_vars, var_name='plot_var', value_name='value')
+    # First state end times
+    for v in plot_vars:
+        tmp_df = new_df[new_df.plot_var == v]
+        g = sns.FacetGrid(tmp_df, hue='exp_group', col='time_group', row='ordered_state')
+        g.map(sns.boxplot, 'taste', 'value')
+        g.map(sns.swarmplot, 'taste', 'value', color=0.25)
+        g.set_titles('{row_name} : {col_name}')
+        g.fig.set_size_inches(16,10)
+        add_suplabels(g.fig, v, 'Taste', v)
+        fn = os.path.join(save_dir, 'hmm_%s.svg' % v)
+        g.fig.savefig(fn)
+        plt.close(g.fig)
+
+
+
+def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
+    # Grab data
+    if rec_dir[-1] == os.sep:
+        rec_dir = rec_dir[:-1]
+
+    parsed = os.path.basename(rec_dir).split('_')
+    anim = parsed[0]
+    rec_group = parsed[-3]
+
+    if hmm is None or params is None:
+        handler = phmm.HmmHandler(rec_dir)
+        ho = handler.get_data_overview().set_index('hmm_id')
+        if hmm_id not in ho.index:
+            return
+        else:
+            row = ho.loc[hmm_id]
+
+        h5_file = handler.h5_file
+        hmm, time, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
+    else:
+        row = params.copy()
+        row['n_iterations'] = hmm.iteration
+
+    taste = row['taste']
+    title = '%s %s\nHMM #%i: %s' % (anim, rec_group, hmm_id, taste)
+    n_trials = row['n_trials']
+    n_states = row['n_states']
+    colors = hplt.get_hmm_plot_colors(n_states)
+
+    spikes, dt, time = phmm.get_hmm_spike_data(rec_dir, row['unit_type'],
+                                               row['channel'],
+                                               time_start=row['time_start'],
+                                               time_end=row['time_end'],
+                                               dt=row['dt'], trials=n_trials)
+    seqs = hmm.best_sequences
+    if hmm.gamma_probs is None or  hmm.gamma_probs == []:
+        hmm.gamma_probs = hmm.get_gamma_probabilities(spikes, dt)
+        hmmIO.write_hmm_to_hdf5(h5_file, hmm, time, params)
+
+    fig = plt.figure(figsize=(24,10), constrained_layout=False)
+    gs0 = fig.add_gridspec(1,3)
+    gs00 = gs0[0].subgridspec(2,1, hspace=0.4)
+    gs01 = gs0[1].subgridspec(n_trials, 1)
+    gs001 = gs00[1].subgridspec(1, n_states)
+    gs02 = gs0[2].subgridspec(n_trials, 1)
+
+    llax = fig.add_subplot(gs00[0])
+    llax.plot(hmm.ll_hist, linewidth=1, color='k', alpha=0.5)
+    llax.set_ylabel('Max Log Likelihood')
+    llax.set_xlabel('Iteration')
+    # Also mark where change in LL first dropped below threshold and the last time it dropped below thresh and stayed below
+    # Also mark the maxima
+    if len(hmm.ll_hist) > 0:
+        llax.axvline(row['n_iterations'], color='g')
+        filt_ll = gaussian_filter1d(hmm.ll_hist, 4)
+        llax.plot(filt_ll, linewidth=2, color='m')
+        diff_ll = np.diff(filt_ll)
+        below = np.where(np.abs(diff_ll) < 0.00001)[0]
+        if len(below) > 0:
+            n1 = below[0]
+            llax.axvline(n1, color='r', linestyle='--')
+            changes = np.where(np.diff(below) > 1)[0]
+            if len(changes) > 0:
+                n2 = below[changes[-1]+1]
+                llax.axvline(n2, color='m', linestyle='--')
+
+        n3 = np.argmax(filt_ll)
+        llax.axvline(n3, color='b', linestyle=':')
+        trend = phmm.check_ll_trend(hmm, 1e-3)
+    else:
+        trend = ''
+
+    for i, (seq, trial, gamma) in enumerate(zip(seqs, spikes, hmm.gamma_probs)):
+        ax = fig.add_subplot(gs01[i])
+        gax = fig.add_subplot(gs02[i])
+        hplt.plot_raster(trial, time=time, ax=ax)
+        hplt.plot_sequence(seq, time=time, ax=ax, colors=colors)
+        hplt.plot_probability_traces(gamma, time=time, ax=gax, colors=colors)
+
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        for spine in gax.spines.values():
+            spine.set_visible(False)
+
+        ax.get_yaxis().set_visible(False)
+        ax.get_xaxis().set_visible(False)
+        ax.set_ylabel(i)
+        if time[0] < 0:
+            ax.axvline(0, color='red', linestyle='--', linewidth=3, alpha=0.8)
+
+        if ax.is_last_row():
+            ax.get_xaxis().set_visible(True)
+            ax.set_xlabel('Time (ms)')
+
+        gax.get_yaxis().set_visible(False)
+        gax.get_xaxis().set_visible(False)
+        gax.set_ylabel(i)
+        if time[0] < 0:
+            gax.axvline(0, color='red', linestyle='--', linewidth=3, alpha=0.8)
+
+        if gax.is_last_row():
+            gax.get_xaxis().set_visible(True)
+            gax.set_xlabel('Time (ms)')
+
+    tmp_ax = fig.add_subplot(gs0[1], frameon=False)
+    tmp_ax.tick_params(labelcolor='none', top=False, bottom=False,
+                       left=False, right=False)
+    tmp_ax.set_ylabel('Trials', labelpad=-25)
+
+    tmp_ax = fig.add_subplot(gs0[2], frameon=False)
+    tmp_ax.tick_params(labelcolor='none', top=False, bottom=False,
+                       left=False, right=False)
+
+    rates = hmm.emission
+    rate_axes = [fig.add_subplot(gs001[x]) for x in range(n_states)]
+    hplt.plot_hmm_rates(rates, axes=rate_axes, colors=colors)
+    rate_axes[-1].set_xlabel('')
+    tmp_ax = fig.add_subplot(gs00[1], frameon=False)
+    tmp_ax.tick_params(labelcolor='none', top=False, bottom=False,
+                       left=False, right=False)
+    tmp_ax.set_xlabel('Firing Rate (Hz)')
+    fig.subplots_adjust(top=0.85)
+    title += '\n' + trend
+    fig.suptitle(title)
+
+    if save_file is None:
+        return fig
+    else:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return None
+
+
+def plot_classifier_results(group, states, early_res, late_res,
+                            label=None, save_file=None):
+    rec_dir = group.rec_dir.unique()[0]
+    rec_name = os.path.basename(rec_dir).split('_')
+    rec_name = '_'.join(rec_name[:-2])
+    h5_file = get_hmm_h5(rec_dir)
+    title = rec_name
+    title += ('\nEarly Acc.: %0.2f%%, Late Acc.: %0.2f%%'
+              % (early_res.accuracy, late_res.accuracy))
+    if label is not None:
+        title += '\n' + label
+
+    colors = TASTE_COLORS.copy()
+    early_colors = {k: change_hue(c, 0.4) for k,c in colors.items()}
+    late_colors = {k: change_hue(c, 1.1) for k,c in colors.items()}
+
+    # First make sure rows align with early and late
+    early_id = early_res.row_id # rec_dir, hmm_id, taste, trial_#
+    late_id = late_res.row_id
+    early_pred = early_res.Y_predicted
+    late_pred = late_res.Y_predicted
+    n_rows = early_id.shape[0]
+    spikes = []
+    sequences = []
+    data_id = [] # taste, trial_#, early_state, late_state, n_states
+    time = None
+    for (i, row), (early_state, late_state) in zip(group, states):
+        hmm_id = row['hmm_id']
+        hmm , t, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
+        channel = params['channel']
+        n_trials = params['n_trials']
+        t_start = params['t_start']
+        t_end = params['t_end']
+        dt = params['dt']
+        spike_array, _, s_time = phmm.get_hmm_spike_data(rec_dir, unit_type,
+                                                         channel,
+                                                         time_start=t_start,
+                                                         time_end=t_end, dt=dt,
+                                                         trials=n_trials)
+        spikes.append(spike_array)
+        sequences.append(hmm.best_sequences)
+        data_id.extend([(row['taste'], xi, early_state, late_state, row['n_states'])
+                        for x in np.arange(0, n_trials)])
+        if time is None:
+            time = s_time
+        elif not np.array_equal(time, s_time):
+            raise ValueError('Time vectors do not match')
+
+    spikes = np.vstack(spikes)
+    sequences = np.vstack(sequences)
+    data_id = np.array(data_id)
+
+    fig, axes = plt.subplots(nrows=n_rows, ncols=2, figsize=(16, 15))
+    for i, (spike_arr, seq, row_id) in enumerate(zip(spikes, sequences, data_id)):
+        taste, trial, es, ls, n_states = row_id
+        eidx = np.where((early_id[:,2] == taste) & (early_id[:,3] == trial))[0]
+        lidx = np.where((late_id[:,2] == taste) & (late_id[:,3] == trial))[0]
+        e_pred = early_pred[eidx]
+        l_pred = late_pred[lidx]
+        colors = [plt.cm.gray(x) for x in np.linspace(0.1, 0.7, n_states-2)]
+        real_colors = colors.copy()
+        pred_colors = colors.copy()
+        real_colors.insert(es, early_colors[taste])
+        pred_colors.insert(es, early_colors[e_pred])
+        real_colors.insert(ls, late_colors[taste])
+        pred_colors.insert(ls, late_colors[l_pred])
+        ax1 = axes[i, 0]
+        ax2 = axes[i, 1]
+        if ax1.is_first_row():
+            ax1.set_title('Actual')
+            ax2.set_title('Predicted')
+
+        hplt.plot_raster(spike_arr, time=time, ax=ax1)
+        hplt.plot_raster(spike_arr, time=time, ax=ax2)
+        hplt.plot_sequence(seq, time=time, ax=ax1, colors=real_colors)
+        hplt.plot_sequence(seq, time=time, ax=ax2, colors=pred_colors)
+
+        for spine in ax1.spines.values():
+            spine.set_visible(False)
+
+        for spine in ax2.spines.values():
+            spine.set_visible(False)
+
+        ax1.get_yaxis().set_visible(False)
+        ax2.get_xaxis().set_visible(False)
+        if time[0] < 0:
+            ax1.axvline(0, color='red', linestyle='--', linewidth=3, alpha=0.8)
+            ax2.axvline(0, color='red', linestyle='--', linewidth=3, alpha=0.8)
+
+        if ax1.is_last_row():
+            ax1.get_xaxis().set_visible(True)
+            ax1.set_xlabel('Time (ms)')
+            ax2.get_xaxis().set_visible(True)
+            ax2.set_xlabel('Time (ms)')
+
+    fig.subplots_adjust(top=0.85)
+    fig.suptitle(title)
+    if save_file is None:
+        return fig
+    else:
+        fig.savefig(save_file)
+        plt.close(fig)
+
+
+def plot_pal_classifier_results(group, states, early_res, late_res,
+                                label=None, save_file=None):
+    rec_dir = group.rec_dir.unique()[0]
+    rec_name = os.path.basename(rec_dir).split('_')
+    rec_name = '_'.join(rec_name[:-2])
+    h5_file = get_hmm_h5(rec_dir)
+    title = rec_name
+    title += ('\nEarly Acc.: %0.2f%%, Late Acc.: %0.2f%%'
+              % (early_res.accuracy, late_res.accuracy))
+    if label is not None:
+        title += '\n' + label
+
+    colors = TASTE_COLORS.copy()
+
+    # First make sure rows align with early and late
+    early_id = early_res.row_id # rec_dir, hmm_id, taste, palatability, trial_#
+    late_id = late_res.row_id
+    early_pred = early_res.Y_predicted
+    late_pred = late_res.Y_predicted
+    n_rows = early_id.shape[0]
+
+    # Make the assumption that each palatability maps to a single taste
+    pal_taste_map = {p: t for t,p in np.unique(early_id[:, 2:4], axis=0)}
+
+    fig, axes = plt.subplots(nrows=2, ncols=2)
+    early_real_colors = [colors[x[2]] for x in early_id]
+    late_real_colors = [colors[x[2]] for x in late_id]
+    early_pred_colors = [colors[pal_taste_map[x]] for x in early_pred]
+    late_pred_colors = [colors[pal_taste_map[x]] for x in late_pred]
+    eX = early_res.X
+    lX = late_res.X
+    axes[0,0].scatter(eX[:,0], eX[:,1], c=early_real_colors, alpha=0.6)
+    axes[1,0].scatter(eX[:,0], eX[:,1], c=early_pred_colors, alpha=0.6)
+    axes[0,1].scatter(lX[:,0], lX[:,1], c=late_real_colors, alpha=0.6)
+    axes[1,1].scatter(lX[:,0], lX[:,1], c=late_pred_colors, alpha=0.6)
+
+    axes[0,0].set_ylabel('Actual\nLDA #2')
+    axes[0,0].set_title('Early State')
+    axes[1,0].set_ylabel('Predicted\nLDA #2')
+    axes[1,0].set_xlabel('LDA #1')
+    axes[0,1].set_title('Late State')
+    axes[1,1].set_xlabel('LDA #1')
+    fig.subplots_adjust(top=0.85)
+    fig.suptitle(title)
+    if save_file is None:
+        return fig
+    else:
+        fig.savefig(save_file)
+        plt.close(fig)
+
+def plot_regression_results(group, state_set, early_pal=None, late_pal=None,
+                            label=None, save_file=None):
+    # Plot Residuals
+    # Run PCA, plot 
+    # Actually should be doing LDA classification instead of linear regression
+    pass
+
+
+
+def change_hue(color, amount):
+    '''lightens (amount < 1) or darkens (amount > 1) an rgb color.
+    Input can be matplotlib color string, hex string, or RGB tuple.
+    Examples:
+    >> lighten_color('g', 0.3)
+    >> lighten_color('#F034A3', 0.6)
+    >> lighten_color((.3,.55,.1), 0.5)
+    '''
+    try:
+        c = mc.cnames[color]
+    except:
+        c = color
+        
+    c = colorsys.rgb_to_hls(*mc.to_rgb(c))
+    return colorsys.hls_to_rgb(c[0], 1 - amount * (1 - c[1]), c[2])
+
+
+def get_hmm_h5(rec_dir):
+    tmp = glob.glob(rec_dir + os.sep + '**' + os.sep + '*HMM_Analysis.hdf5', recursive=True)
+    if len(tmp)>1:
+        raise ValueError(str(tmp))
+
+    return tmp[0]

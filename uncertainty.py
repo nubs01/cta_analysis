@@ -3,16 +3,16 @@ import math
 from collections import namedtuple
 
 class I(namedtuple('Imprecise', 'value, delta')):
-    'Imprecise type: I(value=0.0, delta=0.0)' 
+    'Imprecise type: I(value=0.0, delta=0.0)'
 
-    __slots__ = () 
+    __slots__ = ()
 
     def __new__(_cls, value=0.0, delta=0.0):
         'Defaults to 0.0 ± delta'
         return super().__new__(_cls, float(value), abs(float(delta)))
 
     def reciprocal(self):
-        return I(1. / self.value, self.delta / (self.value**2)) 
+        return I(1. / self.value, self.delta / (self.value**2))
 
     def __str__(self):
         'Shorter form of Imprecise as string'
@@ -43,37 +43,40 @@ class I(namedtuple('Imprecise', 'value, delta')):
             a2,b2 = other
             f = a1 * a2
             return I( f, f * ( (b1 / a1)**2 + (b2 / a2)**2 )**0.5 )
-            try:
-                c = float(other)
-            except:
-                return NotImplemented
+        try:
+            c = float(other)
+        except:
+            return NotImplemented
 
             return I(self.value * c, self.delta * c)
-    
+
     def __pow__(self, other):
-         if type(other) == I:
-             return NotImplemented
-         try:
-             c = float(other)
-         except:
-             return NotImplemented
+        if type(other) == I:
+            return NotImplemented
+        try:
+            c = float(other)
+        except:
+            return NotImplemented
 
-         f = self.value ** c
-         return I(f, f * c * (self.delta / self.value))
+        f = self.value ** c
+        if self.value != 0:
+            return I(f, f * c * (self.delta / self.value))
+        else:
+            return I(f, f)
 
-     def __rmul__(self, other):
-         return I.__mul__(self, other)
+    def __rmul__(self, other):
+        return I.__mul__(self, other)
 
-     def __truediv__(self, other):
-         if type(other) == I:
-             return self.__mul__(other.reciprocal())
-         try:
-             c = float(other)
-         except:
-             return NotImplemented
-         return I(self.value / c, self.delta / c)
+    def __truediv__(self, other):
+        if type(other) == I:
+            return self.__mul__(other.reciprocal())
+        try:
+            c = float(other)
+        except:
+            return NotImplemented
+        return I(self.value / c, self.delta / c)
 
-     def __rtruediv__(self, other):
-         return other * self.reciprocal()
+    def __rtruediv__(self, other):
+        return other * self.reciprocal()
 
-     __div__, __rdiv__ = __truediv__, __rtruediv__
+    __div__, __rdiv__ = __truediv__, __rtruediv__

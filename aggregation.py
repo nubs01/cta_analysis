@@ -70,7 +70,7 @@ def find_held_units(proj, percent_criterion=95, raw_waves=False):
     # Loop through animal, electrode, rec pairs
     # Store rec1, el1, unit1, rec2, el2, unit2, interJ3, held, held_unit_name
     held_df = pd.DataFrame(columns=['rec1', 'unit1', 'rec2', 'unit2',
-                                    'inter_J3', 'held', 'held_unit_name', 'exp_group'])
+                                    'inter_J3', 'held', 'held_unit_name', 'exp_group', 'exp_name'])
     for group_name, group in sing_units.groupby(['exp_name', 'electrode']):
         anim = group_name[0]
         electrode = group_name[1]
@@ -102,10 +102,24 @@ def find_held_units(proj, percent_criterion=95, raw_waves=False):
                 J3 = get_inter_J3(rec1, unit1, rec2, unit2, raw_waves=raw_waves)
                 held_df = held_df.append({'rec1': rec1, 'unit1': unit1,
                                           'rec2': rec2, 'unit2': unit2,
-                                          'inter_J3': J3, 'exp_group': row['exp_group']},
+                                          'inter_J3': J3, 'exp_group': row['exp_group'],
+                                          'exp_name': anim},
                                          ignore_index=True)
 
-    held_df = resolve_matches(held_df, threshold)
+    new_held_df = None
+    for group_name, group in held_df.groupby('exp_group'):
+        thresh = np.percentile(sing_units.query('exp_group == @group_name')['intra_J3'],
+                               percent_criterion)
+        tmp = resolve_matches(group, thresh)
+        if new_held_df is None:
+            new_held_df = tmp
+        else:
+            max_num = new_held_df['held_unit_name'].max()
+            tmp['held_unit_name'] = tmp['held_unit_name'] + max_num
+            new_held_df = new_held_df.append(tmp, ignore_index=True).reset_index(drop=True)
+
+    #held_df = resolve_matches(held_df, threshold)
+    held_df = new_held_df.copy()
 
     # Now put the unit letters into the all_units array
     for i, row in held_df.iterrows():
@@ -182,12 +196,11 @@ def resolve_matches(df, thresh):
 
             for u1 in tmp.unit1.unique():
                 all_idx = tmp.index[tmp.unit1 == u1]
-                a = tmp.loc[all_idx,'inter_J3'].argmin()
-                idx = all_idx[a]
+                a = np.argmin(np.array(tmp.loc[all_idx,'inter_J3']))
+                idx = tmp.loc[all_idx, 'inter_J3'].idxmin()
                 u2 = tmp.loc[idx, 'unit2']
                 u2_idx = tmp.index[tmp.unit2 == u2]
-                b = tmp.loc[u2_idx, 'inter_J3'].argmin()
-                bidx = u2_idx[b]
+                bidx = tmp.loc[u2_idx, 'inter_J3'].idxmin()
                 if idx == bidx:
                     others = all_idx.union(u2_idx)
                     others = others.drop(idx)
@@ -277,19 +290,19 @@ def get_firing_rate_trace(rec, unit, ch, bin_size, step_size=None, t_start=None,
 
     return bin_time, FR, (baseline, baseline_sem)
 
-def get_psth(rec, unit, ch, params):
+def get_psth(rec, unit, ch, params, remove_baseline=False):
     baseline_win = params['baseline_comparison']['win_size']
     psth_bin = params['psth']['win_size']
     psth_step = params['psth']['step_size']
     smoothing = params['psth']['smoothing_win']
     psth_start = params['psth']['plot_window'][0]
     psth_end = params['psth']['plot_window'][1]
-    pt, psth, _ = get_firing_rate_trace(rec, unit, ch,
-                                        bin_size=psth_bin,
-                                        step_size=psth_step,
-                                        t_start=psth_start,
-                                        t_end=psth_end,
-                                        baseline_win=baseline_win,
-                                        remove_baseline=True)
+    pt, psth, baseline = get_firing_rate_trace(rec, unit, ch,
+                                               bin_size=psth_bin,
+                                               step_size=psth_step,
+                                               t_start=psth_start,
+                                               t_end=psth_end,
+                                               baseline_win=baseline_win,
+                                               remove_baseline=False)
 
-    return pt, psth
+    return pt, psth, baseline

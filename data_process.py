@@ -1,16 +1,42 @@
 import blechpy, os
 
-def pre_process(dat):
+init_params = {'car_keyword': 'bilateral32', 'emg_port': False, 'shell': False, 'accept_params': True}
+
+def init_dat(dat):
     if isinstance(dat, str):
         fd = dat
         dat = blechpy.load_dataset(fd)
         if dat is None:
-            dat = blechpy.dataset(fd)
+            data_name = os.path.basename(fd).split('_')
+            _ = data_name.pop(-1)
+            _ = data_name.pop(-1)
+            data_name = '_'.join(data_name)
+            dat = blechpy.dataset(file_dir=fd, data_name=data_name, shell=True)
+            dat.save()
+
+    rec_dir = dat.root_dir
+    rec_type = os.path.basename(rec_dir).split('_')[1]
 
     status = dat.process_status
-    if not status['initialize_parameters']:
-        dat.initParams()
+    if not status['initialize parameters']:
+        params = init_params.copy()
+        if rec_type == '4taste':
+            dig_in_names = ['Water', 'Quinine', 'NaCl', 'Citric Acid']
+        else:
+            dig_in_names= ['Saccharin']
 
+        params['dig_in_names'] = dig_in_names
+        dat.initParams(**params)
+
+def pre_process(dat, dead_ch=[]):
+    if isinstance(dat, str):
+        fd = dat
+        dat = blechpy.load_dataset(fd)
+
+    if dat is None:
+        raise ValueError('No Dataset found')
+
+    status = dat.process_status
     if not status['extract_data']:
         dat.extract_data()
 
@@ -18,7 +44,7 @@ def pre_process(dat):
         dat.create_trial_list()
 
     if not status['mark_dead_channels']:
-        dat.mark_dead_channels()
+        dat.mark_dead_channels(dead_ch)
 
     if not status['common_average_reference']:
         dat.common_average_reference()
@@ -28,6 +54,7 @@ def pre_process(dat):
 
 
 def clustering(exp):
+    # TODO Actually I now cluster 1 recording at a time
     if isinstance(exp, str):
         fd = exp
         exp = blechpy.load_experiment(fd)
