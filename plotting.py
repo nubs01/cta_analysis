@@ -16,11 +16,13 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Ellipse, Patch
 import matplotlib.colors as mc
 import colorsys
+import glob
 
 
 TASTE_COLORS = {'Saccharin': 'tab:purple', 'Quinine': 'tab:red',
                 'NaCl': 'tab:green', 'Citric Acid': 'tab:orange',
                 'Water': 'tab:blue'}
+EXP_COLORS = {'Cre': 'tab:blue', 'GFP': 'tab:green'}
 
 def plot_unit_waveforms(rec_dir, unit, ax=None, save_file=None):
     if ax is None:
@@ -555,7 +557,7 @@ def plot_aggregate_pearson(pal_df, save_file):
 def plot_mean_spearman(data_file, save_file):
     data = np.load(data_file)
     labels = data['labels']
-    spear_rs = data['spearman_r']
+    spear_rs = np.abs(data['spearman_r'])
     time = data['time']
     exp_groups = np.unique(labels[:,0])
     time_groups = np.unique(labels[:,1])
@@ -567,13 +569,14 @@ def plot_mean_spearman(data_file, save_file):
     g = sns.FacetGrid(data=df2, row='exp_group', hue='time_group',
                       hue_order=['preCTA', 'postCTA'], sharex=True, sharey=False)
     g.map(sns.lineplot, 'time', 'R', markers=True)
+    g.add_legend()
     #g = sns.catplot(data=df2, x='time', y='R', row='exp_group',
     #                hue='time_group', kind='point', sharex=True, sharey=False)
     g.set_titles('{row_name}')
     g.set_xlabels('Time (ms)')
     g.set_ylabels("Spearman's R")
     g.fig.set_size_inches(15,10)
-    plt.subplots_adjust(top=0.85)
+    plt.subplots_adjust(top=0.85, left=0.1)
     g.fig.suptitle('Mean Spearman Correlation')
     g.fig.savefig(save_file)
     plt.close(g.fig)
@@ -582,7 +585,7 @@ def plot_mean_spearman(data_file, save_file):
 def plot_mean_pearson(data_file, save_file):
     data = np.load(data_file)
     labels = data['labels']
-    pear_rs = data['pearson_r']
+    pear_rs = np.abs(data['pearson_r'])
     time = data['time']
     exp_groups = np.unique(labels[:,0])
     time_groups = np.unique(labels[:,1])
@@ -593,14 +596,14 @@ def plot_mean_pearson(data_file, save_file):
     g = sns.FacetGrid(data=df2, row='exp_group', hue='time_group',
                       hue_order=['preCTA', 'postCTA'], sharex=True, sharey=False)
     g.map(sns.lineplot, 'time', 'R', markers=True)
+    g.add_legend()
     # g = sns.catplot(data=df2, x='time', y='R', row='exp_group',
     #                 hue='time_group', kind='point', sharex=True, sharey=False)
     g.set_titles('{row_name}')
     g.set_xlabels('Time (ms)')
     g.set_ylabels("Pearson's R")
     g.fig.set_size_inches(15, 10)
-
-    plt.subplots_adjust(top=0.85)
+    plt.subplots_adjust(top=0.85, left=0.1)
     g.fig.suptitle('Mean Pearson Correlation')
     g.fig.savefig(save_file)
     plt.close(g.fig)
@@ -1084,6 +1087,7 @@ def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
         row = params.copy()
         row['n_iterations'] = hmm.iteration
 
+    thresh = row['threshold']
     taste = row['taste']
     title = '%s %s\nHMM #%i: %s' % (anim, rec_group, hmm_id, taste)
     n_trials = row['n_trials']
@@ -1095,10 +1099,9 @@ def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
                                                time_start=row['time_start'],
                                                time_end=row['time_end'],
                                                dt=row['dt'], trials=n_trials)
-    seqs = hmm.best_sequences
-    if hmm.gamma_probs is None or  hmm.gamma_probs == []:
-        hmm.gamma_probs = hmm.get_gamma_probabilities(spikes, dt)
-        hmmIO.write_hmm_to_hdf5(h5_file, hmm, time, params)
+    seqs = hmm.stat_arrays['best_sequences']
+    gamma_probs = hmm.stat_arrays['gamma_probabilities']
+    ll_hist = hmm.stat_arrays['fit_LL'][1:]
 
     fig = plt.figure(figsize=(24,10), constrained_layout=False)
     gs0 = fig.add_gridspec(1,3)
@@ -1108,17 +1111,15 @@ def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
     gs02 = gs0[2].subgridspec(n_trials, 1)
 
     llax = fig.add_subplot(gs00[0])
-    llax.plot(hmm.ll_hist, linewidth=1, color='k', alpha=0.5)
+    llax.plot(np.arange(1, len(ll_hist)+1), ll_hist, linewidth=1, color='k', alpha=0.5)
     llax.set_ylabel('Max Log Likelihood')
     llax.set_xlabel('Iteration')
     # Also mark where change in LL first dropped below threshold and the last time it dropped below thresh and stayed below
     # Also mark the maxima
-    if len(hmm.ll_hist) > 0:
+    if len(ll_hist) > 0:
         llax.axvline(row['n_iterations'], color='g')
-        filt_ll = gaussian_filter1d(hmm.ll_hist, 4)
-        llax.plot(filt_ll, linewidth=2, color='m')
-        diff_ll = np.diff(filt_ll)
-        below = np.where(np.abs(diff_ll) < 0.00001)[0]
+        diff_ll = np.diff(ll_hist)
+        below = np.where(np.abs(diff_ll) < thresh)[0]
         if len(below) > 0:
             n1 = below[0]
             llax.axvline(n1, color='r', linestyle='--')
@@ -1127,13 +1128,7 @@ def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
                 n2 = below[changes[-1]+1]
                 llax.axvline(n2, color='m', linestyle='--')
 
-        n3 = np.argmax(filt_ll)
-        llax.axvline(n3, color='b', linestyle=':')
-        trend = phmm.check_ll_trend(hmm, 1e-3)
-    else:
-        trend = ''
-
-    for i, (seq, trial, gamma) in enumerate(zip(seqs, spikes, hmm.gamma_probs)):
+    for i, (seq, trial, gamma) in enumerate(zip(seqs, spikes, gamma_probs)):
         ax = fig.add_subplot(gs01[i])
         gax = fig.add_subplot(gs02[i])
         hplt.plot_raster(trial, time=time, ax=ax)
@@ -1184,7 +1179,6 @@ def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
                        left=False, right=False)
     tmp_ax.set_xlabel('Firing Rate (Hz)')
     fig.subplots_adjust(top=0.85)
-    title += '\n' + trend
     fig.suptitle(title)
 
     if save_file is None:
@@ -1195,7 +1189,7 @@ def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
         return None
 
 
-def plot_classifier_results(group, states, early_res, late_res,
+def plot_classifier_results(group, early_res, late_res,
                             label=None, save_file=None):
     rec_dir = group.rec_dir.unique()[0]
     rec_name = os.path.basename(rec_dir).split('_')
@@ -1221,7 +1215,7 @@ def plot_classifier_results(group, states, early_res, late_res,
     sequences = []
     data_id = [] # taste, trial_#, early_state, late_state, n_states
     time = None
-    for (i, row), (early_state, late_state) in zip(group, states):
+    for i, row in group:
         hmm_id = row['hmm_id']
         hmm , t, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
         channel = params['channel']
@@ -1229,6 +1223,8 @@ def plot_classifier_results(group, states, early_res, late_res,
         t_start = params['t_start']
         t_end = params['t_end']
         dt = params['dt']
+        early_state = row['early_state']
+        late_state = row['late_state']
         spike_array, _, s_time = phmm.get_hmm_spike_data(rec_dir, unit_type,
                                                          channel,
                                                          time_start=t_start,
@@ -1236,7 +1232,7 @@ def plot_classifier_results(group, states, early_res, late_res,
                                                          trials=n_trials)
         spikes.append(spike_array)
         sequences.append(hmm.best_sequences)
-        data_id.extend([(row['taste'], xi, early_state, late_state, row['n_states'])
+        data_id.extend([(row['taste'], x, early_state, late_state, row['n_states'])
                         for x in np.arange(0, n_trials)])
         if time is None:
             time = s_time
@@ -1258,9 +1254,17 @@ def plot_classifier_results(group, states, early_res, late_res,
         real_colors = colors.copy()
         pred_colors = colors.copy()
         real_colors.insert(es, early_colors[taste])
-        pred_colors.insert(es, early_colors[e_pred])
         real_colors.insert(ls, late_colors[taste])
-        pred_colors.insert(ls, late_colors[l_pred])
+        if len(e_pred) == 0:
+            pred_colors.insert(es, early_colors[e_pred])
+        else:
+            pred_colors.insert(es, mc.to_rgba('w'))
+
+        if len(l_pred) == 0:
+            pred_colors.insert(ls, late_colors[l_pred])
+        else:
+            pred_colors.insert(ls, mc.to_rgba('w'))
+
         ax1 = axes[i, 0]
         ax2 = axes[i, 1]
         if ax1.is_first_row():
@@ -1299,7 +1303,7 @@ def plot_classifier_results(group, states, early_res, late_res,
         plt.close(fig)
 
 
-def plot_pal_classifier_results(group, states, early_res, late_res,
+def plot_pal_classifier_results(group, early_res, late_res,
                                 label=None, save_file=None):
     rec_dir = group.rec_dir.unique()[0]
     rec_name = os.path.basename(rec_dir).split('_')
@@ -1381,3 +1385,324 @@ def get_hmm_h5(rec_dir):
         raise ValueError(str(tmp))
 
     return tmp[0]
+
+
+def plot_hmm_sequences(hmm, time, n_baseline=None, row_id=None, save_file=None):
+    '''row_id should be a 1-D vector that groups trials
+    '''
+    paths = hmm.stat_arrays['best_sequences']
+    gamma = hmm.stat_arrays['gamma_probabilities']
+    n_states = hmm.n_states
+    if row_id is None:
+        # Single column of plots
+        row_id = np.repeat(0, paths.shape[0])
+
+    if n_baseline is None:
+        colors = hplt.get_hmm_plot_colors(n_states)
+    else:
+        colors = [plt.cm.gray(x) for x in np.linspace(0.1, 0.8, n_baseline)]
+        n_tastes = int((n_states - n_baseline)/2)
+        t_colors = [plt.cm.tab10(x) for x in np.linspace(0,1, n_tastes)]
+        for col in t_colors:
+            colors.append(change_hue(col, 0.4))
+            colors.append(change_hue(col, 1.1))
+
+
+    groups = np.unique(row_id)
+    n_col = len(groups)
+    n_row = np.max([np.sum(row_id == g) for g in groups])
+    fig, axes = plt.subplots(ncols=n_col, nrows=n_row, figsize=(8*n_col, n_row))
+    if n_col == 1:
+        axes = np.expand_dims(axes, 1)
+
+    if n_row == 1:
+        axes = np.expand_dims(axes, 0)
+
+    handles = []
+    labels = []
+    for col, grp in enumerate(groups):
+        idx = np.where(row_id == grp)[0]
+        for row in range(len(idx)):
+            seq = paths[idx[row], :]
+            _, tmp_h, tmp_l = hplt.plot_sequence(seq, time=time, colors=colors,
+                                                 ax=axes[row, col])
+            for l, h in zip(tmp_l, tmp_h):
+                if l not in labels:
+                    handles.append(h)
+                    labels.append(l)
+
+            if time[0] != 0:
+                axes[row, col].axvline(0, color='red', linestyle='--',
+                                       linewidth=3, alpha=0.8)
+
+        axes[0, col].set_title(grp)
+        axes[-1, col].set_xlabel('Time (ms)')
+
+    fig.subplots_adjust(right=0.9)
+    mid = int(n_row/2)
+    axes[mid, -1].legend(handles, labels, loc='upper center',
+                         bbox_to_anchor=(0.8, .5, .5, .5), shadow=True,
+                         fontsize=14)
+    if save_file is None:
+        return fig, axes
+    else:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return None, None
+
+
+def plot_hmm_coding_accuracy(df, save_file=None):
+    fig, axes = plt.subplots(nrows=5, ncols=2, figsize=(18,24))
+    time_order = ['preCTA', 'postCTA']
+    exp_order = ['Cre', 'GFP']
+
+    df = df.dropna(subset=['early_ID_acc', 'late_ID_acc', 'early_pal_acc', 'late_pal_acc'])
+    g = sns.barplot(data=df, x='time_group', hue='exp_group',
+                    hue_order=exp_order, order=time_order,
+                    ax=axes[0,0], y='early_ID_acc')
+    g.axhline(100/3, color='k', linestyle='--', alpha=0.6)
+    g.legend_.remove()
+    g.set_ylabel('Early\nAcc')
+    g.set_xlabel('')
+    g.set_title('ID Classification')
+
+    g = sns.barplot(data=df, x='time_group', hue='exp_group',
+                    hue_order=exp_order, order=time_order,
+                    ax=axes[1,0], y='late_ID_acc')
+    g.axhline(100/3, color='k', linestyle='--', alpha=0.6)
+    g.legend_.remove()
+    g.set_ylabel('Late\nAcc')
+    g.set_xlabel('')
+    #g.set_title('Late-State ID Classification')
+
+    g = sns.barplot(data=df, x='time_group', hue='exp_group',
+                    hue_order=exp_order, order=time_order,
+                    ax=axes[0,1], y='early_pal_acc')
+    g.axhline(100/3, color='k', linestyle='--', alpha=0.6)
+    g.legend_.remove()
+    g.set_ylabel('')
+    g.set_xlabel('')
+    g.set_title('Palatability Classification')
+
+    g = sns.barplot(data=df, x='time_group', hue='exp_group',
+                    hue_order=exp_order, order=time_order,
+                    ax=axes[1,1], y='late_pal_acc')
+    g.axhline(100/3, color='k', linestyle='--', alpha=0.6)
+    g.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+    g.set_ylabel('')
+    g.set_xlabel('')
+    #g.set_title('Late-State Palatability Classification')
+
+    # Scatter plots to compare early & late classifier accuracy
+    g = sns.scatterplot(data=df, x='early_ID_acc', y='late_ID_acc',
+                        hue='exp_group', hue_order=exp_order, ax=axes[4,0])
+    min_v = df[['early_ID_acc', 'late_ID_acc']].min().min()
+    max_v = df[['early_ID_acc', 'late_ID_acc']].max().max()
+    g.plot([min_v, max_v], [min_v, max_v], color='k', linestyle='--', alpha=0.6)
+    g.legend_.remove()
+    g.set_ylabel('Late ID\nAcc')
+    g.set_xlabel('Early ID ACC')
+
+    g = sns.scatterplot(data=df, x='early_pal_acc', y='late_pal_acc',
+                        hue='exp_group', hue_order=exp_order, ax=axes[4,1])
+    min_v = df[['early_pal_acc', 'late_pal_acc']].min().min()
+    max_v = df[['early_pal_acc', 'late_pal_acc']].max().max()
+    g.plot([min_v, max_v], [min_v, max_v], color='k', linestyle='--', alpha=0.6)
+    g.legend_.remove()
+    g.set_ylabel('')
+    g.set_xlabel('Early Pal ACC')
+
+    # Bar plot of confusion
+    g = sns.barplot(data=df, x='time_group', order=time_order, hue='exp_group',
+                    hue_order=exp_order, ax=axes[2,0], y='early_ID_confusion')
+    g.legend_.remove()
+    g.set_ylabel('Early\nCon')
+    g.set_xlabel('')
+
+    g = sns.barplot(data=df, x='time_group', order=time_order, hue='exp_group',
+                    hue_order=exp_order, ax=axes[3,0], y='late_ID_confusion')
+    g.legend_.remove()
+    g.set_ylabel('Late\nCon')
+    g.set_xlabel('')
+
+    g = sns.barplot(data=df, x='time_group', order=time_order, hue='exp_group',
+                    hue_order=exp_order, ax=axes[2,1], y='early_pal_confusion')
+    g.legend_.remove()
+    g.set_ylabel('')
+    g.set_xlabel('')
+
+    g = sns.barplot(data=df, x='time_group', order=time_order, hue='exp_group',
+                    hue_order=exp_order, ax=axes[3,1], y='late_pal_confusion')
+    g.legend_.remove()
+    g.set_ylabel('')
+    g.set_xlabel('')
+
+    fig.subplots_adjust(top=0.9)
+    fig.suptitle('HMM Population Coding')
+    #fig.tight_layout()
+
+    if save_file is not None:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return None
+    else:
+        return fig
+
+def plot_hmm_timings(df, save_file=None):
+    # time_group- col, state_group - row, exp_group - hue, taste - x
+    # row 1: early state end time
+    # row 2: late state start time
+    # row 3: early state durations
+    # row 4: late state durations
+    exp_order = ['Cre', 'GFP']
+    taste_order = ['Water', 'Citric Acid', 'Quinine', 'NaCl', 'Saccharin']
+    _ = taste_order.pop(0)
+    late_df = df.query('state_group == "late"')
+    early_df = df.query('state_group == "early"')
+    fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15,18))
+
+    # Row 1
+    df1 = early_df.query('time_group == "preCTA"')
+    df2 = early_df.query('time_group == "postCTA"')
+    g = sns.boxplot(data=df1, x='taste', order=taste_order, hue='exp_group',
+                    hue_order=exp_order, ax = axes[0,0], y='t_end')
+    g.set_xlabel('')
+    g.set_ylabel('Early\nEnd')
+    g.legend_.remove()
+    g.set_title('Pre-CTA')
+
+    g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
+                    hue_order=exp_order, ax = axes[0,1], y='t_end')
+    g.set_xlabel('')
+    g.set_ylabel('')
+    g.legend_.remove()
+    g.set_title('Post-CTA')
+
+    # Row 2
+    df1 = late_df.query('time_group == "preCTA"')
+    df2 = late_df.query('time_group == "postCTA"')
+    g = sns.boxplot(data=df1, x='taste', order=taste_order, hue='exp_group',
+                    hue_order=exp_order, ax = axes[1,0], y='t_start')
+    g.set_xlabel('')
+    g.set_ylabel('Late\nStart')
+    g.legend_.remove()
+
+    g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
+                    hue_order=exp_order, ax = axes[1,1], y='t_start')
+    g.set_xlabel('')
+    g.set_ylabel('')
+    g.legend_.remove()
+
+    # Row 3
+    df1 = early_df.query('time_group == "preCTA"')
+    df2 = early_df.query('time_group == "postCTA"')
+    g = sns.boxplot(data=df1, x='taste', order=taste_order, hue='exp_group',
+                    hue_order=exp_order, ax = axes[2,0], y='duration')
+    g.set_xlabel('')
+    g.set_ylabel('Early\nDuration')
+    g.legend_.remove()
+
+    g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
+                    hue_order=exp_order, ax = axes[2,1], y='duration')
+    g.set_xlabel('')
+    g.set_ylabel('')
+    g.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+
+    # Row 3
+    df1 = late_df.query('time_group == "preCTA"')
+    df2 = late_df.query('time_group == "postCTA"')
+    g = sns.boxplot(data=df1, x='taste', order=taste_order, hue='exp_group',
+                    hue_order=exp_order, ax = axes[3,0], y='duration')
+    g.set_xlabel('')
+    g.set_ylabel('Late\nDuration')
+    g.legend_.remove()
+
+    g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
+                    hue_order=exp_order, ax = axes[3,1], y='duration')
+    g.set_xlabel('')
+    g.set_ylabel('')
+    g.legend_.remove()
+
+    fig.subplots_adjust(top=0.9)
+    fig.suptitle('HMM State Timing')
+    #fig.tight_layout()
+
+    if save_file is not None:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return None
+    else:
+        return fig
+
+
+def plot_median_gamma_probs(best_hmms, save_file=None):
+    # diff line style for each time_group
+    # diff color for each exp_group
+    # Not dropping single state trials
+    fig, ax = plt.subplots(nrows=2, figsize=(8,11))
+    time_groups = best_hmms.time_group.unique()
+    exp_groups = best_hmms.exp_group.unique()
+    colors = EXP_COLORS
+    hues = {'preCTA': 0.4, 'postCTA': 1.1}
+    line_styles = ['solid', 'dashed', 'dotted', 'dashdot']
+    line_styles = {k:v for k,v in zip(time_groups, line_styles)}
+    t_start = 0
+    t_end = 1500
+    dt = None
+    for name, group in best_hmms.groupby(['exp_group', 'time_group']):
+        eg = name[0]
+        tg = name[1]
+        early_traces = []
+        late_traces = []
+        time = None
+        for i, row in group.iterrows():
+            if np.isnan(row['early_state']) or np.isnan(row['late_state']):
+                continue
+
+            h5_file = get_hmm_h5(row['rec_dir'])
+            hmm, t, params = phmm.load_hmm_from_hdf5(h5_file, int(row['hmm_id']))
+            es = int(row['early_state'])
+            ls = int(row['late_state'])
+            gamma_probs = hmm.stat_arrays['gamma_probabilities']
+            t_idx = np.where((t <= t_end) & (t >= t_start))[0]
+            eprobs = gamma_probs[:, es, t_idx]
+            lprobs = gamma_probs[:, ls, t_idx]
+            t = t[t_idx]
+            emed = np.median(eprobs, axis=0)
+            lmed = np.median(lprobs, axis=0)
+            early_traces.append(emed)
+            late_traces.append(lmed)
+            if time is None:
+                time = t
+                dt = params['dt']
+            elif dt != params['dt']:
+                raise ValueError('Non-matching time steps')
+
+        pcol = change_hue(colors[eg], hues[tg])
+        if early_traces != []:
+            early_traces = np.vstack(early_traces)
+            etrace = np.median(early_traces, axis=0)
+            ax[0].plot(time, etrace, color=pcol, linestyle=line_styles[tg],
+                       label='%s %s' % (eg, tg))
+
+        if late_traces != []:
+            late_traces = np.vstack(late_traces)
+            ltrace = np.median(late_traces, axis=0)
+            ax[1].plot(time, ltrace, color=pcol, linestyle=line_styles[tg])
+
+    fig.subplots_adjust(top=0.9, left=0.15)
+    fig.suptitle('Median Gamma Probabilities')
+    ax[0].set_ylabel('Early\nState')
+    ax[0].legend()
+    ax[1].set_ylabel('Late\nState')
+    ax[1].set_xlabel('Time (ms)')
+
+    if save_file:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return None
+    else:
+        return fig
+
+
+

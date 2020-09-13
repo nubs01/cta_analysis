@@ -20,6 +20,10 @@ from scipy.stats import sem
 from blechpy.utils import write_tools as wt
 import pylab as pyplt
 from datetime import datetime
+from tqdm import tqdm
+
+PAL_MAP = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
+           'Citric Acid': 2, 'NaCl': 3}
 
 ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 750, 'alpha': 0.05},
                    'pal_responsive': {'win_size': 250, 'step_size': 25,
@@ -112,6 +116,16 @@ class ProjectAnalysis(object):
 
         if 'time_group' not in held_df.columns:
             held_df = held_df.apply(apply_info_from_rec_dir, axis=1)
+            self.write_unit_info(held_df=held_df)
+
+        cta_map = self.project._exp_info.set_index('exp_name')['CTA_learned'].to_dict()
+        cta_map = {k: 'CTA' if v else 'No CTA' for k,v in cta_map.items()}
+        if 'cta_group' not in all_units.columns:
+            all_units['cta_group'] = all_units.exp_name.map(cta_map)
+            self.write_unit_info(all_units=all_units)
+
+        if 'cta_group' not in held_df.columns:
+            all_units['cta_group'] = all_units.exp_name.map(cta_map)
             self.write_unit_info(held_df=held_df)
 
         return all_units, held_df
@@ -873,26 +887,30 @@ class HmmAnalysis(object):
             os.makedirs(save_dir)
 
         self.files = {'params': os.path.join(save_dir, 'hmm_params.json'),
-                      'hmm_overview': os.path.join(save_dir, 'hmm_overview.feather')}
+                      'hmm_overview': os.path.join(save_dir, 'hmm_overview.feather'),
+                      'sorted_hmms': os.path.join(save_dir, 'sorted_hmms.feather'),
+                      'best_hmms': os.path.join(save_dir, 'best_hmms.feather'),
+                      'hmm_coding': os.path.join(save_dir, 'hmm_coding.feather'),
+                      'hmm_timings': os.path.join(save_dir, 'hmm_timings.feather')}
 
         self.base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
-                            'max_iter': 500, 'n_repeats': 25, 'time_start': 0,
-                            'time_end': 1750, 'n_states': 2, 'area': 'GC'}
+                            'max_iter': 100, 'n_repeats': 25, 'time_start': 0,
+                            'time_end': 2000, 'n_states': 2, 'area': 'GC',
+                            'hmm_class':'PoissonHMM', 'threshold': 1e-6}
         # base params changed 8/4/20: max_iter 1000 -> 500, time_end 2000 -> 1500, n_states=2
         # changed 8/6/20: n_states->3
         # Changed 8/10/20: time_end-> 1750 & n_states -> 2
 
     def fit(self):
-        tmp = self.base_params
-        params = [{'n_states': i+2, **tmp.copy()} for i in range(2)]
+        params = self.base_params
+        #params = [{'n_states': i+2, **tmp.copy()} for i in range(2)]
         save_file = self.files['hmm_overview']
         fit_df = None
         for i, row in self.project._exp_info.iterrows():
             exp = load_experiment(row['exp_dir'])
             for rec_dir in exp.recording_dirs:
+                units = phmm.query_units(rec_dir, params['unit_type'], area=params['area'])
                 dat = load_dataset(rec_dir)
-                units = dat.get_unit_table()
-                units = units[units.single_unit]
                 if len(units) < 3:
                     continue
                 else:
@@ -933,31 +951,30 @@ class HmmAnalysis(object):
             ho = feather.read_dataframe(self.files['hmm_overview'])
         else:
             ho = None
+            print('aggregating hmm data...')
+            pbar = tqdm(total=self.project._exp_info.shape[0]*4)
             for i, row in self.project._exp_info.iterrows():
                 exp = load_experiment(row['exp_dir'])
                 for rec_dir in exp.recording_dirs:
-                    dat = load_dataset(rec_dir)
-                    units = dat.get_unit_table()
-                    units = units[units.single_unit]
-                    if len(units) < 4:
+                    h5_file = hmma.get_hmm_h5(rec_dir)
+                    if h5_file is None:
                         continue
-                    else:
-                        handler = phmm.HmmHandler(rec_dir)
-                        df = handler.get_data_overview().copy()
-                        df['rec_dir'] = rec_dir
-                        if ho is None:
-                            ho = df
-                        else:
-                            ho = ho.append(df, ignore_index=True)
 
+                    handler = phmm.HmmHandler(rec_dir)
+                    df = handler.get_data_overview().copy()
+                    df['rec_dir'] = rec_dir
+                    if ho is None:
+                        ho = df
+                    else:
+                        ho = ho.append(df, ignore_index=True)
+
+                    pbar.update(1)
+
+            pbar.close()
             feather.write_dataframe(ho, self.files['hmm_overview'])
 
         if not 'exp_name' in ho.columns:
             ho[['exp_name','rec_group']] = ho['rec_dir'].apply(parse_rec)
-            feather.write_dataframe(ho, self.files['hmm_overview'])
-
-        if not 'll_check' in ho.columns:
-            ho['ll_check'] = ho.apply(hmma.check_ll_asymptote, axis=1)
             feather.write_dataframe(ho, self.files['hmm_overview'])
 
         if not 'single_state_trials' in ho.columns:
@@ -966,45 +983,70 @@ class HmmAnalysis(object):
 
         return ho
 
-    def sort_hmms(self, overwrite=False):
+    def sort_hmms(self, overwrite=False, plot_rejected=False):
         sorted_hmms = self.get_sorted_hmms()
         if sorted_hmms is not None and not overwrite:
             return sorted_hmms
 
-        ho = self.get_hmm_overview(overwrite=overwrite)
-        new_sorting = hmma.sort_hmms(ho)
+        ho = self.get_hmm_overview()
+        new_sorting = hmma.sort_hmms_by_rec(ho)
         if sorted_hmms is not None:
             for i, row in sorted_hmms.iterrows():
-                if row['sort_method'] == 'manual':
-                    j = ((new_sorting['rec_dir'] == row['rec_dir']) &
-                         (new_sorting['hmm_id'] == row['hmm_id']))
+                j = ((new_sorting['rec_dir'] == row['rec_dir']) &
+                     (new_sorting['hmm_id'] == row['hmm_id']))
+                k = ((new_sorting['rec_dir'] == row['rec_dir']) &
+                     (new_sorting['taste'] == row['taste']) &
+                     (new_sorting['hmm_id'] != row['hmm_id']))
+                if row['sort_method'] == 'manual' and row['sorting'] == 'best':
                     new_sorting.loc[j, 'sorting'] = row['sorting']
                     new_sorting.loc[j, 'sort_method'] = row['sort_method']
-                    k = ((new_sorting['rec_dir'] == row['rec_dir']) &
-                         (new_sorting['taste'] == row['taste']) &
-                         (new_sorting['hmm_id'] != row['hmm_id']))
                     new_sorting.loc[k, 'sorting'] = 'rejected'
                     new_sorting.loc[k, 'sort_method'] = 'manual'
 
+                if not np.isnan(row['early_state']):
+                    new_sorting.loc[j, 'early_state'] = row['early_state']
+
+                if not np.isnan(row['late_state']):
+                    new_sorting.loc[j, 'late_state'] = row['late_state']
+
         self.write_sorted_hmms(new_sorting)
-        self.plot_sorted_hmms(overwrite=overwrite)
+        #self.plot_sorted_hmms(overwrite=overwrite, skip_rejected=(not plot_rejected))
         return new_sorting
 
     def write_sorted_hmms(self, sorted_hmms):
-        sorted_file = os.path.join(self.save_dir, 'sorted_hmms.feather')
+        sorted_file = self.files['sorted_hmms']
         feather.write_dataframe(sorted_hmms, sorted_file)
 
     def get_sorted_hmms(self):
-        sorted_file = os.path.join(self.save_dir, 'sorted_hmms.feather')
+        sorted_file = self.files['sorted_hmms']
         if os.path.isfile(sorted_file):
-            return feather.read_dataframe(sorted_file)
+            sorted_hmms = feather.read_dataframe(sorted_file)
+            if 'early_state' not in sorted_hmms.columns:
+                sorted_hmms['early_state'] = np.nan
+
+            if 'late_state' not in sorted_hmms.columns:
+                sorted_hmms['late_state'] = np.nan
+
+            if 'palatability' not in sorted_hmms.columns:
+                pal_map = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
+                           'Citric Acid': 2, 'NaCl': 3}
+                sorted_hmms['palatability'] = sorted_hmms.taste.map(pal_map)
+                self.write_sorted_hmms(sorted_hmms)
+
+            return sorted_hmms
         else:
             return None
 
-    def get_best_hmms(self):
+    def get_best_hmms(self, overwrite=False):
+        best_file = self.files['best_hmms']
+        if os.path.isfile(best_file) and not overwrite:
+            return feather.read_dataframe(best_file)
+
         df = self.get_sorted_hmms()
-        df = df[df['sorting'] == 'best']
-        return df
+        all_units, _ = ProjectAnalysis(self.project).get_unit_info()
+        out_df = hmma.make_best_hmm_list(all_units, df)
+        feather.write_dataframe(out_df, best_file)
+        return out_df
 
     def mark_hmm_as(self, sorting, **kwargs):
         '''kwargs should be column & value and will be used to manually re-sort
@@ -1048,16 +1090,16 @@ class HmmAnalysis(object):
         hmm_df = self.get_sorted_hmms()
         i = ((hmm_df['exp_name'] == exp_name) &
              (hmm_df['rec_group'] == rec_group) &
-             (hmm_df['taste'] == taste))
+             (hmm_df['hmm_id'] == hmm_id))
 
         print('-'*80)
-        print('Setting state for HMMs: %s %s %s')
+        print('Setting state for HMMs: %s %s %s' % (exp_name, rec_group, hmm_id))
         if early_state is not None:
             print('    - setting early_state to state #%i' % early_state)
             hmm_df.loc[i, 'early_state'] = early_state
 
         if late_state is not None:
-            print('    - setting late_state to state #%i' % early_state)
+            print('    - setting late_state to state #%i' % late_state)
             hmm_df.loc[i, 'late_state'] = late_state
 
         print('Saving dataframe...')
@@ -1091,10 +1133,12 @@ class HmmAnalysis(object):
 
             plt.plot_hmm(row['rec_dir'], row['hmm_id'], save_file=fn)
 
-    def plot_hmms(self, overwrite=False):
+    def plot_hmms_deprecated(self, overwrite=False):
         hmm_df = self.get_hmm_overview()
         grp_keys = list(self.base_params.keys())
-        grp_keys.append('n_states')
+        if 'n_states' not in grp_keys:
+            grp_keys.append('n_states')
+
         exp_map = self.project._exp_info.set_index('exp_name')['exp_group'].to_dict()
 
         for grp_i, (name, group) in enumerate(hmm_df.groupby(grp_keys)):
@@ -1125,7 +1169,21 @@ class HmmAnalysis(object):
 
                 plt.plot_hmm(rec_dir, hmm_id, save_file=fn)
 
-    def analyze_state_durations(self, overwrite=False):
+    def plot_all_hmms(self):
+        sorted_df = self.get_sorted_hmms()
+        plot_dir = os.path.join(self.save_dir, 'Fitted_HMMs')
+        for name, group in sorted_df.groupby(['exp_name', 'rec_group', 'taste']):
+            print('Plotting HMMs for %s' % ('_'.join(name)))
+            anim_dir = os.path.join(plot_dir, '_'.join(name))
+            if not os.path.isdir(anim_dir):
+                os.makedirs(anim_dir)
+
+            for i, row in group.iterrows():
+                fn = '_'.join(name) + '_HMM#%s.svg' % row['hmm_id']
+                fn = os.path.join(anim_dir, fn)
+                plt.plot_hmm(row['rec_dir'], row['hmm_id'], save_file=fn)
+
+    def deprecated_analyze_state_durations(self, overwrite=False):
         hmm_df = self.get_sorted_hmms()
         hmm_df = hmm_df[hmm_df['sorting'] == 'best']
         grp_keys = list(self.base_params.keys())
@@ -1160,11 +1218,54 @@ class HmmAnalysis(object):
             dat_file = os.path.join(save_dir, 'state_breakdown.feather')
             feather.write_dataframe(state_breakdown, dat_file)
 
+    def analyze_hmms(self, overwrite=False):
+        best_hmms = self.get_best_hmms()
+        all_units, _  = ProjectAnalysis(self.project).get_unit_info()
+        coding_file = self.files['hmm_coding']
+        timing_file = self.files['hmm_timings']
+        timing_stats = timing_file.replace('feather', 'txt')
+        if os.path.isfile(coding_file) and not overwrite:
+            coding = feather.read_dataframe(coding_file)
+        else:
+            coding = hmma.analyze_hmm_state_coding(best_hmms, all_units)
+            feather.write_dataframe(coding, coding_file)
+
+        if os.path.isfile(timing_file) and not overwrite:
+            timings = feather.read_dataframe(timing_file)
+        else:
+            timings = hmma.analyze_hmm_state_timing(best_hmms)
+            feather.write_dataframe(timings, timing_file)
+
+        if not os.path.isfile(timing_stats) or overwrite:
+            descrip = hmma.describe_hmm_state_timings(timings)
+            with open(timing_stats, 'w') as f:
+                print(descrip, file=f)
+
+        return coding, timings
+
+    def plot_hmm_coding_and_timing(self):
+        best_hmms = self.get_best_hmms()
+        coding, timings = analyze_hmms()
+        coding_fn = os.path.join(self.save_dir, 'HMM_coding.svg')
+        timing_fn = os.path.join(self.save_dir, 'HMM_timing.svg')
+        prob_fn = os.path.join(self.save_dir, 'HMM_Median_Gamma_Probs.svg')
+        plt.plot_hmm_coding_accuracy(coding, coding_fn)
+        plt.plot_hmm_timings(timings, timing_fn)
+        plt.plot_median_gamma_probs(best_hmms.query('taste == "Saccharin"'), prob_fn)
+
+    def process_fitted_hmms(self):
+        ho = self.get_hmm_overview(overwrite=True)
+        sorted_df = self.sort_hmms(overwrite=True, plot_rejected=False)
+        self.plot_sorted_hmms(overwrite=False)
+        self.plot_all_hmms()
+        best_hmms = self.get_best_hmms(overwrite=True)
+        return sorted_df, best_hmms
+
 
 def get_saccharin_consumption(anim_dir):
     '''greabs animal metadata from anim-dir and returns
     mean_saccharin_consumption/mean_water_consumption
-    drops CTA Training day. 
+    drops CTA Training day.
     '''
     ld = [os.path.join(anim_dir, x) for x in os.listdir(anim_dir) if 'metadata.p' in x]
     if len(ld) == 0:
@@ -1325,7 +1426,12 @@ def parse_rec(rd):
         rd = rd[:-1]
 
     parsed = os.path.basename(rd).split('_')
-    return pd.Series([parsed[0], parsed[-3]], index=['exp_name', 'rec_group'])
+    exp_name = parsed[0]
+    rec_group = parsed[-1]
+    if rec_group == 'SaccTest':
+        rec_group = 'ctaTest'
+
+    return pd.Series([exp_name, rec_group], index=['exp_name', 'rec_group'])
 
 
 # def refit_hmms(refit_df, base_params, log_file=None):
@@ -1373,26 +1479,17 @@ def refit_hmms(sorted_df, base_params, all_units,log_file=None, rec_params={}):
         f = open(log_file, 'w')
         f.close()
 
-    all_units = all_units[all_units['single_unit']]
-    id_cols = ['taste', 'n_states', 'dt', 'time_start', 'time_end']
-    df = sorted_df[['rec_dir', 'hmm_id', 'sorting', 'sort_method', *id_cols]]
-    # refit = [] # rec_dir, local_rec_dir, taste, channel
-    # for name, group in df.groupby(['rec_dir', 'taste']):
-    #     if any(group['sorting'] == 'best'):
-    #         continue
-
-    #     rec_dir, taste = name
-    #     rd = get_local_path(rec_dir)
-
-    #     dat = load_dataset(rd)
-    #     dim = dat.dig_in_mapping.set_index('name')
-    #     channel = dim.loc[taste]
-    #     refit.append((rec_dir, rd, taste, channel))
-
-    # refit = np.array(refit)
-    # rec_dirs = np.unique(refit[:,0])
-    rec_dirs = all_units.rec_dir.unique()
-    for rec in rec_dirs:
+    all_units['rec_dir'] = all_units['rec_dir'].apply(get_local_path)
+    needed_df = hmma.make_necessary_hmm_list(all_units)
+    best_hmms = hmma.make_best_hmm_list(all_units, sorted_df)
+    base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
+                   'max_iter': 200, 'n_repeats': 50, 'time_start': -250,
+                   'time_end': 2000, 'n_states': 3, 'area': 'GC',
+                   'hmm_class': 'PoissonHMM', 'threshold':1e-6, 'notes': 'sequential - fixed'}
+    id_params = ['taste', 'n_trials', 'unit_type', 'dt', 'time_start',
+                 'time_end', 'n_states', 'area']
+    #for rec, group in needed_df.groupby(['rec_dir']):
+    for rec, group in best_hmms.groupby(['rec_dir']):
         if log_file is not None:
             with open(log_file, 'r+') as f:
                 processed = f.read().split('\n')
@@ -1405,61 +1502,53 @@ def refit_hmms(sorted_df, base_params, all_units,log_file=None, rec_params={}):
                     f.write(datetime.now().strftime('%m/%d/%Y %H:%M') + '\n\n')
 
         print('Processing %s' % rec)
-        units = all_units[all_units['rec_dir'] == rec]
-        rd = get_local_path(rec)
-        if not all(units['area'] == 'GC'):
-            # Previous HMMs were fitting using all cells, must refit if STR units were included
-            h5_file = hmma.get_hmm_h5(rd)
-            print('Deleting hdf5 since STR cells were included')
-            os.remove(h5_file)
-
-
-
-        # idx = np.where(refit[:,0] == rec)[0]
-        # group = refit[idx, :]
         params = base_params.copy()
         if rec in rec_params.keys():
             for k,v in rec_params[rec].items():
                 params[k] = v
 
-        handler = phmm.HmmHandler(rd)
-        units = units[units['area'] == 'GC']
-        if len(units) < 3:
-            print('Not enough single units in GC. skipping...')
-            continue
-
-        if len(units) > 20:
+        handler = phmm.HmmHandler(rec)
+        n_cells = group.n_cells.max()
+        if n_cells > 10:
             params['unit_type'] = 'pyramidal'
 
-        dat = load_dataset(rd)
-        tastes = dat.dig_in_mapping['name'].to_list()
-        dim = dat.dig_in_mapping.copy().set_index('name')
-        new_params = []
-        for tst in tastes:
-            tmp_i = ((sorted_df['rec_dir'] == rec) &
-                     (sorted_df['taste'] == tst))
-            sortings = sorted_df.loc[tmp_i, 'sorting']
-            if any(sortings == 'best'):
-                continue
+        plist = [params]
+        # for i, row in group.iterrows():
+        #     tmp_i = ((sorted_df['rec_dir'] == rec) &
+        #              (sorted_df['taste'] == row['taste']))
+        #     sortings = sorted_df.loc[tmp_i, 'sorting']
+        #     if any(sortings == 'best'):
+        #         continue
 
-            handler.delete_hmm(taste=tst, n_states=params['n_states'],
-                               unit_type=params['unit_type'])
-            if tst != 'Water':
-                p = params.copy()
-                p['taste'] = tst
-                p['channel'] = dim.loc[tst, 'channel']
-                handler.add_params(p)
-
-        # overview = handler.get_data_overview()
-        # for _, _, taste, channel in group:
-        #     # delete all hmms for taste
-        #     handler.delete_hmm(taste=taste, n_states=params['n_states'])
         #     p = params.copy()
-        #     p['channel'] = channel
-        #     p['taste'] = taste
-        #     handler.add_params(p)
+        #     p['taste'] = row['taste']
+        #     p['channel'] = row['channel']
 
-        handler.run()
+        #     handler.delete_hmm(**{x:p[x] for x in id_params})
+        #     handler.add_params(p)
+        #tastes = group['taste'].to_list()
+        #params['taste'] = tastes
+        #for i, row in group.iterrows():
+        #    if np.isnan(row['hmm_id']):
+        #        p = params.copy()
+        #        p['taste'] = row['taste']
+        #        p['channel'] = row['channel']
+        #        plist.append(p)
+
+        #p = params.copy()
+        #p['time_end'] = 1750
+        #plist.append(p)
+        #handler.run(constraint_func=hmma.PI_A_constrained)
+        handler.add_params(plist)
+        handler.run(constraint_func=hmma.sequential_constrained)
+
+        # for p in plist:
+        #     p['notes'] = 'PI & A constrained - fixed'
+
+        # handler.add_params(plist)
+        # handler.run(constraint_func=hmma.PI_A_constrained)
+        # handler.add_params(params)
+        # handler.run(constraint_func=hmma.A_contrained)
 
 
 def get_local_path(path):
@@ -1471,7 +1560,7 @@ def get_local_path(path):
     return out
 
 
-def analyze_saccharin_confusion(held_df, best_hmms):
+def analyze_saccharin_confusion_deprecated(held_df, best_hmms):
     held_df = held_df.copy()
     held_df = held_df.dropna(subset=['held_unit_name', 'time_group'])
     training_tastes = ['NaCl', 'Quinine']
@@ -1574,10 +1663,10 @@ def analyze_saccharin_confusion(held_df, best_hmms):
         train_labels = np.vstack(train_labels)
         test_labels = np.vstack(test_labels)
 
-        early_gnb = GaussianNB()
-        early_pred = early_gnb.fit(early_train, train_labels[:, 0]).predict(early_test)
-        late_gnb = GaussianNB()
-        late_pred = late_gnb.fit(late_train, train_labels[:,0]).predict(late_test)
+        early_gnb = stats.NBClassifier(train_labels[:,0], early_train, row_id=train_labels)
+        early_pred = early_gnb.fit().predict(early_test)
+        late_gnb = stats.NBClassifier(train_labels[:,0], late_train, row_id=train_labels)
+        late_pred = late_gnb.fit().predict(late_test)
         n_trials = test_labels.shape[0]
         e_nacl = np.sum(early_pred == 'NaCl')
         l_nacl = np.sum(late_pred == 'NaCl')

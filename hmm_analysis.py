@@ -10,18 +10,7 @@ import pandas as pd
 from itertools import permutations, product
 import statsmodels.api as sm
 import analysis_stats as stats
-
-
-def analyze_hmm(hmm, rec_dir, params):
-    pass
-
-# determine overall state order
-# get starts and end times for each state
-
-def analyze_state_correlation(hmm, rec_dir, params):
-    pass
-# if 4taste, determine correlation to identity and to palatability of each state
-# 
+from tqdm import tqdm
 
 
 def deduce_state_order(best_paths):
@@ -103,7 +92,7 @@ def get_state_breakdown(rec_dir, hmm_id, h5_file=None):
                                              time_start=time_start,
                                              time_end=time_end, dt=dt,
                                              trials=n_trials)
-    best_paths = hmm.best_sequences.astype('int')
+    best_paths = hmm.stat_arrays['best_sequences'].astype('int')
     state_order = deduce_state_order(best_paths)
     taste = params['taste']
     n_cells = params['n_cells']
@@ -165,9 +154,9 @@ def get_state_breakdown(rec_dir, hmm_id, h5_file=None):
     return pd.DataFrame(out)
 
 
-
 def check_hmms(hmm_df):
     hmm_df['asymptotic_ll'] = hmm_df.apply(check_ll_asymptote)
+
 
 def check_ll_asymptote(row):
     thresh = 1e-3
@@ -176,7 +165,7 @@ def check_ll_asymptote(row):
     n_iter = row['n_iterations']-1
     h5_file = get_hmm_h5(rec_dir)
     hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
-    ll_hist = hmm.ll_hist
+    ll_hist = hmm.stat_arrays['fit_LL']
     filt_ll = gaussian_filter1d(ll_hist, 4)
     # TODO: Finish this
     diff_ll = np.diff(filt_ll)
@@ -197,20 +186,6 @@ def check_ll_asymptote(row):
         return 'increasing'
 
     return 'flux'
-
-
-def check_single_state_trials(row):
-    rec_dir = row['rec_dir']
-    hmm_id = row['hmm_id']
-    h5_file = get_hmm_h5(rec_dir)
-    hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
-    paths = hmm.best_sequences
-    single_state_trials = 0
-    for path in paths:
-        if len(np.unique(path)) == 1:
-            single_state_trials += 1
-
-    return single_state_trials
 
 
 def _deprecated_get_best_hmms(df):
@@ -249,55 +224,7 @@ def _deprecated_get_best_hmms(df):
     return best_df, refit_df
 
 
-def sort_hmms(df, required_params=None):
-    '''Adds two columns to hmm_overview dataframe, sorting and sort_type.
-    sorting can be best, reject, or refit. sort_type is "params" if params
-    failed to meet requirements or "auto" if rest of this algo sorts them, if
-    HMMs are sorted by user this will be "manual"
-    '''
-    out_df = df.copy()
-    if required_params is None:
-        required_params = {'n_trials': 15, 'dt': 0.001, 'unit_type': 'single'}
-
-    qry = ' and '.join(['{} == "{}"'.format(k,v) for k,v in required_params.items()])
-    df = df.query(qry)
-    # One HMM for each animal rec and taste
-    df = df.query('n_states == 3 or n_states == 2')
-    met_params = np.array((df.index))
-    out_df['sorting'] = 'rejected'
-    out_df['sort_method'] = 'params'
-    out_df.loc[met_params, 'sort_method'] = 'auto'
-    for name, group in df.groupby(['exp_name', 'rec_group', 'taste']):
-        grp = group.query('ll_check == "plateau" and single_state_trials < 7')
-        # If some HMMs plateaued then pick the one with the best log likelihood
-        if len(grp) > 0:
-            best_idx = grp.max_log_prob.idxmax()
-            out_df.loc[best_idx, 'sorting'] = 'best'
-            continue
-
-        # otherwise pick an increasing to refit
-        grp = group[group['ll_check'] == 'increasing']
-        if len(grp) > 0:
-            refit_idx = grp.max_log_prob.idxmax()
-            out_df.loc[refit_idx, 'sorting'] = 'refit'
-            continue
-
-        # otherwise put all in refit
-        out_df.loc[group.index, 'sorting'] = 'refit'
-
-    return out_df
-
-
-
-def get_hmm_h5(rec_dir):
-    tmp = glob.glob(rec_dir + os.sep + '**' + os.sep + '*HMM_Analysis.hdf5', recursive=True)
-    if len(tmp)>1:
-        raise ValueError(str(tmp))
-
-    return tmp[0]
-
-
-def run_state_classification_analysis(best_df):
+def run_state_classification_analysis_old(best_df):
     '''Grab 4taste sessions and compute taste ID classification accuracy with early and late states
     Test all combinations of early and late states across HMMs in rec_group
     2-state HMMs are already split into early and late 
@@ -378,8 +305,8 @@ def run_state_classification_analysis(best_df):
                 rec_dir = row['rec_dir']
                 hmm_id = row['hmm_id']
                 h5_file = get_hmm_h5(rec_dir)
-                hmm, time, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
-                state_map = deduce_state_order(hmm.best_sequences)
+                hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+                state_map = deduce_state_order(hmm.stat_arrays['best_sequences'])
                 state_map = {v:k for k,v in state_map.items()}  # Now state_map maps from order -> state
                 hmm_set.append((state_map[x] for x in states))
 
@@ -409,6 +336,109 @@ def run_state_classification_analysis(best_df):
     pass
 
 
+def ID_pal_hmm_analysis(best_df, plot_dir=None):
+    '''needs best_hmm dataframe from make_best_hmm_list
+    '''
+    # important columns: rec_dir, taste, exp_name, rec_group, time_group,
+    # cta_group, n_cells, best_hmm, early_state, late_state, exp_group, channel, palatability
+    #TODO: Add palatability to best_df
+
+    # out columns: rec_dir, exp_name, exp_group, rec_group,
+    # time_group, cta_group, n_cells, n_tastes
+    # early_ID_acc, late_ID_acc, early_pal_acc, late_pal_acc
+    id_cols = ['rec_dir', 'exp_name', 'rec_group', 'time_group', 'cta_group', 'n_cells']
+    confusion_tastes = ['NaCl', 'Quinine', 'Saccharin']
+    out = []
+    for name, group in best_df.groupby(id_cols):
+        tmp = {k:v for k,v in zip(id_cols, name)}
+        eid, lid, epal, lpal, econ, lcon = [None]*6
+        tmp['n_tastes'] = len(group)
+        if len(group) >= 2:
+            eid = get_NB_classifier_accuracy(group, 'taste', 'early_state')
+            lid  = get_NB_classifier_accuracy(group, 'taste', 'late_state')
+            epal = get_LDA_classifier_accuracy(group, 'palatability',
+                                               'early_state')
+            lpal = get_LDA_classifier_accuracy(group, 'palatability',
+                                               'late_state')
+
+            if plot_dir is None:
+                continue
+
+            if not os.path.isdir(plot_dir):
+                os.makedirs(plot_dir)
+
+            fn = os.path.join(plot_dir, '%s_%s-ID_Classifier.svg' % (exp_name, rec_group))
+            mplt.plot_classifier_results(group, early=eid, late=lid,
+                                         label=label, save_file=fn)
+            fn = fn.replace('ID_Classifier', 'Pal_Classifier')
+            mplt.plot_pal_classifier_results(group, early=eid, late=lid,
+                                             label=label, save_file=fn)
+            fn = fn.replace('Pal_Regression.svg', '.txt')
+            write_id_pal_to_text(fn, group, early_id=eid, late_id=lid,
+                                 early_pal=epal, late_pal=lpal, label=label)
+
+        tmp['early_ID_acc'] = eid.accuracy
+        tmp['late_ID_acc'] = lid.accuracy
+        tmp['early_pal_acc'] = epal
+        tmp['late_pal_acc'] = lpal
+        out.append(tmp)
+
+    return pd.DataFrame(out)
+
+
+def saccharin_confusion_analysis(best_df):
+    confusion_tastes = ['NaCl', 'Quinine', 'Saccharin']
+    for name, group in best_df.groupby(['exp_name', 'time_group']):
+        if all([x in group.taste for x in confusion_tastes]):
+            econ = NB_classifier_confusion(group, label_col='taste',
+                                           state_col='early_state',
+                                           train_labels=['NaCl', 'Quinine'],
+                                           test_labels=['Saccharin'])
+
+            lcon = get_NB_classifier_confusion(group, label_col='taste',
+                                               state_col='late_state',
+                                               train_labels=['NaCl', 'Quinine'],
+                                               test_labels=['Saccharin'])
+
+
+def run_NB_ID_classifier_deprecated(group, states):
+    '''
+    
+    Parameters
+    ----------
+    group : pd.DataFrame, must have columns: rec_dir, hmm_id
+    states: list of int, which state of each HMM to use for classification
+    
+    Returns
+    -------
+    float : accuracy [0,1]
+    '''
+    labels = []
+    rates = []
+    identifiers = []
+    for (i, row), state in zip(group.iterrows(), states):
+        rec_dir = row['rec_dir']
+        hmm_id = row['hmm_id']
+        h5_file = get_hmm_h5(rec_dir)
+        hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+        state_map = deduce_state_order(hmm.stat_arrays['best_sequences'])
+        state_map = {v:k for k,v in state_map.items()}  # Now state_map maps from order -> state
+        tmp_r, tmp_trials = get_state_firing_rates(rec_dir, hmm_id, state_map[state])
+        # drop single state trials
+        tmp_l = np.repeat(row['taste'], tmp_r.shape[0])
+        tmp_id = [(rec_dir, hmm_id, row['taste'], x) for x in tmp_trials]
+        labels.append(tmp_l)
+        rates.append(tmp_r)
+        identifiers.extend(tmp_n)
+
+    labels = np.concatenate(labels)
+    rates = np.vstack(rates)
+    identifiers = np.array(identifiers)  # rec_dir, hmm_id, taste, trial_#
+    model = stats.NBClassifier(labels, rates, row_id=identifiers)
+    results = model.fit()
+    return results
+
+
 def get_early_and_late_firing_rates(rec_dir, hmm_id, early_state, late_state, units=None):
     '''Early state gives the firing rate during the first occurence of that
     state in each trial. Late state gives the instance of that state that
@@ -417,7 +447,7 @@ def get_early_and_late_firing_rates(rec_dir, hmm_id, early_state, late_state, un
     early state
     '''
     h5_file = get_hmm_h5(rec_dir)
-    hmm , time, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
+    hmm , time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
     channel = params['channel']
     n_trials = params['n_trials']
     t_start = params['t_start']
@@ -426,7 +456,7 @@ def get_early_and_late_firing_rates(rec_dir, hmm_id, early_state, late_state, un
     if units is None:
         units = params['unit_type']
 
-    spike_array, dt, s_time = phmm.get_hmm_spike_data(rec_dir, units,
+    spike_array, dt, s_time = ph.get_hmm_spike_data(rec_dir, units,
                                                       channel,
                                                       time_start=t_start,
                                                       time_end=t_end, dt=dt,
@@ -437,7 +467,7 @@ def get_early_and_late_firing_rates(rec_dir, hmm_id, early_state, late_state, un
     late_rates = []
     dropped_trials = []
     labels = [] # trial, early_start, early_end, late_start, late_end
-    for trial, (spikes, path) in enumerate(zip(spike_array, hmm.best_sequences)):
+    for trial, (spikes, path) in enumerate(zip(spike_array, hmm.stat_arrays['best_sequences'])):
         if not early_state in path or not late_state in path:
             dropped_trials.append(trial)
             continue
@@ -485,109 +515,8 @@ def get_early_and_late_firing_rates(rec_dir, hmm_id, early_state, late_state, un
     late_out = np.array(late_rates)
     return out_labels, early_out, late_out
 
-def get_state_firing_rates(rec_dir, hmm_id, state):
-    '''returns an Trials x Neurons array of firing rates giving the mean firing
-    rate of each neuron in the first instance of state in each trial
-    
-    Parameters
-    ----------
-    rec_dir : str, recording directory
-    hmm_id : int, id number of the hmm to get states from
-    state: int, identity of the state
-    
-    Returns
-    -------
-    np.ndarray : Trials x Neuron matrix of firing rates
-    
-    
-    Raises
-    ------
-    
-    '''
-    h5_file = get_hmm_h5(rec_dir)
-    hmm , time, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
-    channel = params['channel']
-    n_trials = params['n_trials']
-    t_start = params['t_start']
-    t_end = params['t_end']
-    dt = params['dt']
-    unit_type = params['unit_type']
-    spike_array, dt, s_time = phmm.get_hmm_spike_data(rec_dir, unit_type,
-                                                      channel,
-                                                      time_start=t_start,
-                                                      time_end=t_end, dt=dt,
-                                                      trials=n_trials)
-    # spike_array is trial x neuron x time
-    n_trials, n_cells, n_steps = spike_array.shape
-    rates = []
-    single_state_trials = []
-    for trial, (spikes, path) in enumerate(zip(spike_array, hmm.best_sequences)):
-        if not state in path:
-            continue
 
-        if len(np.unique(path)) == 1:
-            single_state_trials.append(True)
-        else:
-            single_state_trials.append(False)
-
-        # only grab first instance of state
-        idx1 = np.where(path == state)[0][0]
-        idx2 = np.where(path != state)[0]
-        if len(idx2) == 0 or not any(idx2 > idx1):
-            idx2 = len(path)-1
-        else:
-            idx2 = idx2[idx2 > idx1][0]
-
-        t1 = time[idx1]
-        t2 = time[idx2]
-        si = np.where((s_time >= t1) & (s_time < t2))[0]
-        tmp = np.sum(spikes[:, si], axis=-1) / (dt*len(si))
-        rates.append(tmp)
-
-    return np.array(rates), np.array(single_state_trials)
-
-
-def run_NB_ID_classifier(group, states):
-    '''
-    
-    Parameters
-    ----------
-    group : pd.DataFrame, must have columns: rec_dir, hmm_id
-    states: list of int, which state of each HMM to use for classification
-    
-    Returns
-    -------
-    float : accuracy [0,1]
-    '''
-    labels = []
-    rates = []
-    identifiers = []
-    for (i, row), state in zip(group.iterrows(), states):
-        rec_dir = row['rec_dir']
-        hmm_id = row['hmm_id']
-        h5_file = get_hmm_h5(rec_dir)
-        hmm, time, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
-        state_map = deduce_state_order(hmm.best_sequences)
-        state_map = {v:k for k,v in state_map.items()}  # Now state_map maps from order -> state
-        tmp_r, tmp_ss = get_state_firing_rates(rec_dir, hmm_id, state_map[state])
-        # drop single state trials
-        keep_idx = np.where(tmp_ss == False)[0]
-        tmp_r = tmp_r[keep_idx]
-        tmp_l = np.repeat(row['taste'], tmp_r.shape[0])
-        tmp_id = [(rec_dir, hmm_id, row['taste'], x) for x in np.arange(0, tmp_r.shape[0])]
-        labels.append(tmp_l)
-        rates.append(tmp_r)
-        identifiers.extend(tmp_n)
-
-    labels = np.concatenate(labels)
-    rates = np.vstack(rates)
-    identifiers = np.array(identifiers)  # rec_dir, hmm_id, taste, trial_#
-    model = stats.NBClassifier(labels, rates, row_id=identifiers)
-    results = model.fit()
-    return results
-
-
-def run_pal_classifier(group, states):
+def run_pal_classifier_deprecated(group, states):
     '''
     
     Parameters
@@ -608,15 +537,13 @@ def run_pal_classifier(group, states):
         dim = load_dataset(rec_dir).dig_in_mapping.set_index('name')
         pal = dim.loc[row['taste'], 'palatability_rank']
         h5_file = get_hmm_h5(rec_dir)
-        hmm, time, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
-        state_map = deduce_state_order(hmm.best_sequences)
+        hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+        state_map = deduce_state_order(hmm.stat_arrays['best_sequences'])
         state_map = {v:k for k,v in state_map.items()}  # Now state_map maps from order -> state
-        tmp_r, tmp_ss = get_state_firing_rates(rec_dir, hmm_id, state_map[state])
-        # drop single state trials
-        keep_idx = np.where(tmp_ss == False)[0]
-        tmp_r = tmp_r[keep_idx]
+        tmp_r, tmp_trial = get_state_firing_rates(rec_dir, hmm_id, state_map[state])
+        # single states already dropped
         tmp_l = np.repeat(pal, tmp_r.shape[0])
-        tmp_id = [(rec_dir, hmm_id, row['taste'], pal, x) for x in np.arange(0, tmp_r.shape[0])]
+        tmp_id = [(rec_dir, hmm_id, row['taste'], pal, x) for x in tmp_trials]
         labels.append(tmp_l)
         rates.append(tmp_r)
         identifiers.extend(tmp_n)
@@ -625,7 +552,33 @@ def run_pal_classifier(group, states):
     rates = np.vstack(rates)
     identifiers = np.array(identifiers)  # rec_dir, hmm_id, taste, trial_#
     model = stats.LDAClassifier(labels, rates, row_id=identifiers)
-    results = model.fit()
+    results = model.leave1out_fit()
+    return results
+
+
+def get_LDA_classifier_accuracy_deprecated(group, label_col, state_col):
+    labels = []
+    rates = []
+    identifiers = []
+    for i, row in group.iterrows():
+        rec_dir = row['rec_dir']
+        hmm_id = row['hmm_id']
+        pal = row[label_col]
+        h5_file = get_hmm_h5(rec_dir)
+        hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+        tmp_r, tmp_trial = get_state_firing_rates(rec_dir, hmm_id, row[state_col])
+        # single states already dropped
+        tmp_l = np.repeat(pal, tmp_r.shape[0])
+        tmp_id = [(rec_dir, hmm_id, row[label_col], pal, x) for x in tmp_trials]
+        labels.append(tmp_l)
+        rates.append(tmp_r)
+        identifiers.extend(tmp_n)
+
+    labels = np.concatenate(labels)
+    rates = np.vstack(rates)
+    identifiers = np.array(identifiers)  # rec_dir, hmm_id, taste, trial_#
+    model = stats.LDAClassifier(labels, rates, row_id=identifiers)
+    results = model.leave1out_fit()
     return results
 
 
@@ -649,8 +602,8 @@ def run_pal_regression(group, states):
         dim = load_dataset(rec_dir).dig_in_mapping.set_index('name')
         pal = dim.loc[row['taste'], 'palatability_rank']
         h5_file = get_hmm_h5(rec_dir)
-        hmm, time, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
-        state_map = deduce_state_order(hmm.best_sequences)
+        hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+        state_map = deduce_state_order(hmm.stat_arrays['best_sequences'])
         state_map = {v:k for k,v in state_map.items()}  # Now state_map maps from order -> state
         tmp_r, tmp_ss = get_state_firing_rates(rec_dir, hmm_id, state_map[state])
         keep_idx = np.where(tmp_ss == False)[0]
@@ -667,7 +620,7 @@ def run_pal_regression(group, states):
     return results
 
 
-def write_id_pal_to_text(save_file, group, state_set, early_id=None,
+def write_id_pal_to_text(save_file, group, early_id=None,
                          late_id=None, early_pal=None, late_pal=None,
                          label=None):
     rec_dir = group.rec_dir.unique()[0]
@@ -678,18 +631,15 @@ def write_id_pal_to_text(save_file, group, state_set, early_id=None,
         rec_dir = row['rec_dir']
         hmm_id = row['hmm_id']
         h5_file = get_hmm_h5(rec_dir)
-        hmm, time, params = phmm.load_hmm_from_hdf5(h5_file, hmm_id)
-        state_map = deduce_state_order(hmm.best_sequences)
-        state_map = {v:k for k,v in state_map.items()}  # Now state_map maps from order -> state
+        hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+        state_map = deduce_state_order(hmm.stat_arrays['best_sequences'])
         # hmm_id, early_state, late_state, early_hmm_state, late_hmm_state
-        early_state = state_set[i][0]
-        late_state = state_set[i][1]
-        info_table.append((hmm_id, early_state, late_state,
-                           state_map[early_state], state_map[late_state]))
+        early_state = row['early_state']
+        late_state = row['late_state']
+        info_table.append((hmm_id, early_state, late_state))
 
     info_df = pd.DataFrame(info_table, columns=['hmm_id', 'early_state',
-                                                'late_state', 'early_hmm_state',
-                                                'late_hmm_state'])
+                                                'late_state'])
     out = []
     out.append(rec_name)
     out.append(rec_dir)
@@ -720,6 +670,851 @@ def write_id_pal_to_text(save_file, group, state_set, early_id=None,
     # out.append(late_pal.summary('palatability'))
     with open(save_file, 'w') as f:
         f.write('\n'.join(out))
+
+
+## Helper Functions ##
+def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50):
+    '''returns an Trials x Neurons array of firing rates giving the mean firing
+    rate of each neuron in the first instance of state in each trial
+
+    Parameters
+    ----------
+    rec_dir : str, recording directory
+    hmm_id : int, id number of the hmm to get states from
+    state: int, identity of the state
+    units: list of str, optional
+        which unit names to use. if not provided units are queried based on hmm
+        params
+    min_dur: int, optional
+        minimum duration in ms of a state for it to be used. Default is 50ms.
+
+    Returns
+    -------
+    np.ndarray : Trials x Neuron matrix of firing rates
+
+
+    Raises
+    ------
+
+    '''
+    h5_file = get_hmm_h5(rec_dir)
+    hmm , time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+    channel = params['channel']
+    n_trials = params['n_trials']
+    t_start = params['time_start']
+    t_end = params['time_end']
+    dt = params['dt']
+    unit_type = params['unit_type']
+    area = params['area']
+    if units is not None:
+        unit_type = units
+
+    spike_array, dt, s_time = ph.get_hmm_spike_data(rec_dir, unit_type,
+                                                      channel,
+                                                      time_start=t_start,
+                                                      time_end=t_end, dt=dt,
+                                                      trials=n_trials, area=area)
+    # spike_array is trial x neuron x time
+    n_trials, n_cells, n_steps = spike_array.shape
+    rates = []
+    trial_nums = []
+    for trial, (spikes, path) in enumerate(zip(spike_array, hmm.stat_arrays['best_sequences'])):
+        if not state in path:
+            continue
+
+        # Skip trial if there is only 1 state
+        if len(np.unique(path)) == 1:
+            continue
+
+        # Skip trials with only 1 state longer than the min_dur
+        summary = summarize_sequence(path)
+        if len(np.where(summary[:,-1] >= min_dur)[0]) < 2:
+            continue
+
+        # only grab first instance of state
+        idx1 = np.where(path == state)[0][0]
+        idx2 = np.where(path != state)[0]
+        if len(idx2) == 0 or not any(idx2 > idx1):
+            idx2 = len(path)-1
+        else:
+            idx2 = idx2[idx2 > idx1][0]
+
+        t1 = time[idx1]
+        t2 = time[idx2]
+        # Skip trial if this particular state is shorter than min_dur
+        if t2 - t1 < min_dur:
+            continue
+
+        si = np.where((s_time >= t1) & (s_time < t2))[0]
+        tmp = np.sum(spikes[:, si], axis=-1) / (dt*len(si))
+        trial_nums.append(trial)
+        rates.append(tmp)
+
+    return np.array(rates), np.array(trial_nums)
+
+
+def get_classifier_data(group, label_col, state_col, all_units):
+    units = get_common_units(group, all_units)
+    if units == {}:
+        return None, None, None
+
+    labels = []
+    rates = []
+    identifiers = []
+    for i, row in group.iterrows():
+        rec_dir = row['rec_dir']
+        hmm_id = int(row['hmm_id'])
+        state = row[state_col]
+        un = units[rec_dir]
+        h5_file = get_hmm_h5(rec_dir)
+        hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+        tmp_r, tmp_trials = get_state_firing_rates(rec_dir, hmm_id, state, units=un)
+        tmp_l = np.repeat(row[label_col], tmp_r.shape[0])
+        tmp_id = [(rec_dir, hmm_id, row[label_col], x) for x in tmp_trials]
+        if len(tmp_r) == 0:
+            # This should trigger when all trials are single state
+            continue
+
+        labels.append(tmp_l)
+        rates.append(tmp_r)
+        identifiers.extend(tmp_id)
+
+    labels = np.concatenate(labels)
+    rates = np.vstack(rates)
+    identifiers = np.array(identifiers)  # rec_dir, hmm_id, taste, trial_#
+    return labels, rates, identifiers
+
+
+def get_common_units(group, all_units):
+    held = np.array(all_units.held_unit_name.unique())
+    rec_dirs = group.rec_dir.unique()
+    if len(rec_dirs) == 1:
+        rd = rec_dirs[0]
+        out = {rd: all_units.query('rec_dir == @rd')['unit_name'].to_list()}
+        return out
+
+    for rd in group.rec_dir.unique():
+        tmp = all_units.query('rec_dir == @rd').dropna(subset=['held_unit_name'])
+        units = np.array(tmp['held_unit_name'])
+        held = np.intersect1d(held, units)
+
+    out = {}
+    if len(held) == 0:
+        return out
+
+    for rd in group.rec_dir.unique():
+        tmp = all_units[all_units['held_unit_name'].isin(held) &
+                        (all_units['rec_dir'] == rd)]
+        out[rd] = tmp['unit_name'].to_list()
+
+    return out
+
+
+def check_single_state_trials(row, min_dur=50):
+    '''takes a row from hmm_overview and determines the number of single state decoded paths
+    min_dur signifies the minimum time in ms that a state must be present to
+    count
+    '''
+    rec_dir = row['rec_dir']
+    hmm_id = row['hmm_id']
+    h5_file = get_hmm_h5(rec_dir)
+    hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+    dt = params['dt'] * 1000  # convert from sec to ms
+    min_idx = int(min_dur/dt)
+    paths = hmm.stat_arrays['best_sequences']
+    single_state_trials = 0
+    for path in paths:
+        info = summarize_sequence(path)
+        idx = np.where(info[:,-1] >= min_dur)[0]
+        if len(idx) < 2:
+            single_state_trials += 1
+
+    return single_state_trials
+
+
+def summarize_sequence(path):
+    '''takes a 1-D sequences of categorical info and returns a matrix with
+    columns: state, start_idx, end_idx, duration in samples
+    '''
+    tmp_path = path.copy()
+    out = []
+    a = np.where(np.diff(path) != 0)[0]
+    starts = np.insert(a+1,0,0)
+    ends = np.insert(a, len(a), len(path)-1)
+    for st, en in zip(starts, ends):
+        out.append((path[st], st, en, en-st+1))
+
+    return np.array(out)
+
+
+## HMM Organization/Sorting ##
+def make_necessary_hmm_list(all_units, min_cells=3, area='GC'):
+    df = all_units.query('single_unit == True & area == @area')
+    id_cols = ['rec_dir', 'exp_name', 'exp_group', 'rec_group', 'time_group', 'cta_group']
+    out = []
+    for name, group in df.groupby(id_cols):
+        if len(group) < min_cells:
+            continue
+
+        dat = load_dataset(name[0])
+        dim = dat.dig_in_mapping
+        n_cells = len(group)
+        for i, row in dim.iterrows():
+            if (row['exclude']): # or row['name'].lower() == 'water'):
+                continue
+
+            tmp = {k: v for k,v in zip(id_cols, name)}
+            tmp['taste'] = row['name']
+            tmp['channel'] = row['channel']
+            tmp['palatability'] = row['palatability_rank']
+            tmp['n_cells'] = n_cells
+            if tmp['palatability'] < 1:
+                # Fix palatability so that Water and Saccharin are -1
+                tmp['palatability'] = -1
+
+            out.append(tmp)
+
+    return pd.DataFrame(out)
+
+
+def make_best_hmm_list(all_units, sorted_hmms, min_cells=3, area='GC'):
+    df = make_necessary_hmm_list(all_units, min_cells=min_cells, area=area)
+    sorted_hmms = sorted_hmms.query('sorting == "best"')
+    hmm_df = sorted_hmms.set_index(['exp_name', 'rec_group', 'taste'])
+    def apply_info(row):
+        exp, rec, tst = row[['exp_name', 'rec_group', 'taste']]
+        hid, srt, es, ls = None, None, None, None
+        if (exp, rec, tst) in hmm_df.index:
+            hr = hmm_df.loc[(exp, rec, tst)]
+            hid, srt, es, ls = hr[['hmm_id', 'sorting', 'early_state', 'late_state']]
+
+        return pd.Series({'hmm_id': hid, 'sorting': srt, 'early_state': es, 'late_state': ls})
+
+    df[['hmm_id', 'sorting', 'early_state', 'late_state']] = df.apply(apply_info, axis=1)
+    return df
+
+
+def sort_hmms(df, required_params=None):
+    '''Adds four columns to hmm_overview dataframe, [sorting, sort_type, early_state, late_state].
+    sorting can be best, reject, or refit. sort_type is "params" if params
+    failed to meet requirements or "auto" if rest of this algo sorts them, if
+    HMMs are sorted by user this will be "manual"
+    '''
+    out_df = df.copy()
+    if required_params is not None:
+        qry = ' and '.join(['{} == "{}"'.format(k,v) for k,v in required_params.items()])
+        df = df.query(qry)
+
+    # One HMM for each animal rec and taste
+    df = df.query('n_states == 3 or n_states == 2')
+    met_params = np.array((df.index))
+    out_df['sorting'] = 'rejected'
+    out_df['sort_method'] = 'params'
+    out_df.loc[met_params, 'sort_method'] = 'auto'
+    print('sorting hmms...')
+    dfgrp = df.groupby(['exp_name', 'rec_group', 'taste'])
+    for name, group in tqdm(dfgrp, total=len(dfgrp)):
+        grp = group.query('single_state_trials < 7')
+        if len(grp) > 0:
+            best_idx = grp.log_likelihood.idxmax()
+            out_df.loc[best_idx, 'sorting'] = 'best'
+            continue
+
+        grp2 = group.query('single_state_trials >= 7')
+        if len(grp2) > 0:
+            best_idx = grp2.log_likelihood.idxmax()
+            out_df.loc[best_idx, 'sorting'] = 'refit'
+        # grp = group.query('ll_check == "plateau" and single_state_trials < 7')
+        # # If some HMMs plateaued then pick the one with the best log likelihood
+        # if len(grp) > 0:
+        #     best_idx = grp.max_log_prob.idxmax()
+        #     out_df.loc[best_idx, 'sorting'] = 'best'
+        #     continue
+
+        # # otherwise pick an increasing to refit
+        # grp = group[group['ll_check'] == 'increasing']
+        # if len(grp) > 0:
+        #     refit_idx = grp.max_log_prob.idxmax()
+        #     out_df.loc[refit_idx, 'sorting'] = 'refit'
+        #     continue
+
+        # # otherwise put all in refit
+        # out_df.loc[group.index, 'sorting'] = 'refit'
+
+    out_df['early_state'] = np.nan
+    out_df['late_state'] = np.nan
+    #TODO: Way to choose early and late state
+    return out_df
+
+
+def get_hmm_h5(rec_dir):
+    tmp = glob.glob(rec_dir + os.sep + '**' + os.sep + '*HMM_Analysis.hdf5', recursive=True)
+    if len(tmp)>1:
+        raise ValueError(str(tmp))
+
+    if len(tmp) == 0:
+        return None
+
+    return tmp[0]
+
+
+def sort_hmms_by_rec(df, required_params=None):
+    '''Finds best HMMs but uses same parameter set for each recording. Attempts
+    tom minimize single state trials and maximize log likelihood
+    '''
+    out_df = df.copy()
+    if required_params is not None:
+        qry = ' and '.join(['{} == "{}"'.format(k,v) for k,v in required_params.items()])
+        df = df.query(qry)
+
+    # One HMM for each animal rec and taste
+    met_params = np.array((df.index))
+    out_df['sorting'] = 'rejected'
+    out_df['sort_method'] = 'params'
+    out_df.loc[met_params, 'sort_method'] = 'auto'
+    print('sorting hmms...')
+    dfgrp = df.groupby(['exp_name', 'rec_group'])
+    key_params = ['dt', 'n_states', 'time_start', 'time_end', 'notes', 'unit_type'] 
+    for name, group in tqdm(dfgrp, total=len(dfgrp)):
+        tastes = group.taste.unique()
+        good_params = []
+        ok_params = []
+        for pset, subgroup in group.groupby(key_params):
+            if not all([x in tastes for x in subgroup.taste]):
+                continue
+
+            tmp = {k:v for k,v in zip(key_params, pset)}
+            tmp['LL'] = subgroup.log_likelihood.sum()
+            if all([x < 7 for x in subgroup.single_state_trials]):
+                good_params.append(tmp)
+            else:
+                ok_params.append(tmp)
+
+        print('Found %i good params for %s' % (len(good_params), '_'.join(name)))
+        if len(good_params) > 0:
+            idx = np.argmax([x['LL'] for x in good_params])
+            best_params = good_params[idx]
+        elif len(ok_params) > 0:
+            idx = np.argmax([x['LL'] for x in ok_params])
+            best_params = ok_params[idx]
+        else:
+            continue
+
+        _ = best_params.pop('LL')
+        qstr = ' and '.join(['{} == "{}"'.format(k,v) for k,v in best_params.items()])
+        tmp_df = group.query(qstr)
+        best_idx = tmp_df.index
+        out_df.loc[best_idx, 'sorting'] = 'best'
+
+    out_df['early_state'] = np.nan
+    out_df['late_state'] = np.nan
+    #TODO: Way to choose early and late state
+    return out_df
+
+
+## HMM Constraints ##
+def PI_A_constrained(PI, A, B):
+    '''Constrains HMM to always start in state 0 then move into any other
+    state. States are only allowed to transition into higher number states
+    '''
+    n_states = len(PI)
+    PI[0] = 1.0
+    PI[1:] = 0.0
+    A[-1, :-1] = 0.0
+    A[-1, -1] = 1.0
+    # This will make states consecutive
+    if n_states > 2:
+        for i in np.arange(1,n_states-1):
+            A[i, :i] = 0.0
+            A[i,:] = A[i,:]/np.sum(A[i,:])
+
+    return PI, A, B
+
+
+def A_contrained(PI, A, B):
+    '''Constrains HMM to always start in state 0 then move into any other
+    state. States are only allowed to transition into higher number states
+    '''
+    n_states = len(PI)
+    PI[0] = 1.0
+    PI[1:] = 0.0
+    A[-1, :-1] = 0.0
+    A[-1, -1] = 1.0
+    # This will make states consecutive
+    if n_states > 2:
+        for i in np.arange(1,n_states-1):
+            A[i, :i] = 0.0
+            A[i,:] = A[i,:]/np.sum(A[i,:])
+
+    return PI, A, B
+
+def sequential_constrained(PI, A, B):
+    '''Forces all state to occur sequentially
+    '''
+    n_states = len(PI)
+    PI[0] = 1.0
+    PI[1:] = 0.0
+    for i in np.arange(n_states):
+        if i > 0:
+            A[i, :i] = 0.0
+
+        if i < n_states-2:
+            A[i, i+2:] = 0.0
+
+        A[i, :] = A[i,:]/np.sum(A[i,:])
+
+    return PI, A, B
+
+## HMM decoding ##
+def analyze_hmm_state_coding(best_hmms, all_units):
+    '''create output dataframe with columns: exp_name, time_group, exp_group,
+    cta_group, early_ID_acc, early_pal_acc, early_ID_confusion,
+    early_pal_confusion, late_ID_acc, late_pal_acc, late_ID_confusion,
+    late_pal_confusion
+    '''
+    # TODO: Remove unit hard-coding
+    all_units = all_units.query('(area == "GC") and (single_unit == True)')
+
+    best_hmms = best_hmms.dropna(subset=['hmm_id', 'early_state', 'late_state'])
+    out_keys = ['exp_name', 'exp_group', 'time_group', 'cta_group',
+                'early_ID_acc', 'early_ID_confusion', 'early_pal_acc',
+                'early_pal_confusion', 'late_ID_acc', 'late_ID_confusion',
+                'late_pal_acc', 'late_pal_confusion', 'n_cells', 'n_held_cells']
+    template = dict.fromkeys(out_keys)
+    id_cols = ['exp_name', 'exp_group', 'time_group', 'cta_group']
+    id_tastes = ['Citric Acid', 'NaCl', 'Quinine']
+    pal_tastes = ['Citric Acid', 'NaCl', 'Quinine']
+    confusion_tastes = ['NaCl', 'Quinine', 'Saccharin']
+    confusion_pal = [3, 1, -1]
+    out = []
+    for name, group in best_hmms.groupby(id_cols):
+        tmp = template.copy()
+        for k,v in zip(id_cols, name):
+            tmp[k] = v
+
+        # ID Classification
+        if group.taste.isin(id_tastes).sum() == len(id_tastes):
+            eia = NB_classifier_accuracy(group[group.taste.isin(id_tastes)],
+                                         'taste', 'early_state', all_units)
+            lia = NB_classifier_accuracy(group[group.taste.isin(id_tastes)],
+                                         'taste', 'late_state', all_units)
+            if eia is not None:
+                tmp['early_ID_acc'] = eia.accuracy
+
+            if lia is not None:
+                tmp['late_ID_acc'] = lia.accuracy
+
+        # Palatability Classification
+        if group.taste.isin(pal_tastes).sum() == len(pal_tastes):
+            epa = LDA_classifier_accuracy(group[group.taste.isin(pal_tastes)],
+                                          'palatability', 'early_state', all_units)
+            lpa = LDA_classifier_accuracy(group[group.taste.isin(pal_tastes)],
+                                          'palatability', 'late_state', all_units)
+            if epa is not None:
+                tmp['early_pal_acc'] = epa.accuracy
+
+            if lpa is not None:
+                tmp['late_pal_acc'] = lpa.accuracy
+
+        # ID Confusion
+        if group.taste.isin(confusion_tastes).sum() == len(confusion_tastes):
+            j = group.taste.isin(confusion_tastes)
+            eic = NB_classifier_confusion(group[j], 'taste', 'early_state', all_units,
+                                          train_labels=confusion_tastes[:-1],
+                                          test_labels=[confusion_tastes[-1]])
+            lic = NB_classifier_confusion(group[j], 'taste', 'late_state', all_units,
+                                          train_labels=confusion_tastes[:-1],
+                                          test_labels=[confusion_tastes[-1]])
+            tmp['early_ID_confusion'] = eic
+            tmp['late_ID_confusion'] = lic
+
+        # Pal Confusion
+        if group.taste.isin(confusion_tastes).sum() == len(confusion_tastes):
+            j = group.taste.isin(confusion_tastes)
+            epc = LDA_classifier_confusion(group[j], 'palatability', 'early_state', all_units,
+                                           train_labels=confusion_pal[:-1],
+                                           test_labels=[confusion_pal[-1]])
+            lpc = LDA_classifier_confusion(group[j], 'palatability', 'late_state', all_units,
+                                           train_labels=confusion_pal[:-1],
+                                           test_labels=[confusion_pal[-1]])
+            tmp['early_pal_confusion'] = epc
+            tmp['late_pal_confusion'] = lpc
+
+        # n_cells in 4taste rec (single units in GC, which are used for classfier, not for HMM fitting
+        # therefore if HMM fitted with pyrmadial this will use all single units
+        rec_dirs = group.rec_dir.unique()
+        rd = [x for x in rec_dirs if '4taste' in x]
+        if len(rd) != 0:
+            tmp_units = all_units.query('rec_dir == @rd')
+            n_cells = len(tmp_units)
+            tmp['n_cells'] = n_cells
+
+        # n_held_cells, number of common units between 2 recordings used for confusion computation
+        if len(rec_dirs) > 1:
+            j = group.taste.isin(confusion_tastes)
+            units = get_common_units(group[j], all_units)
+            if units == {}:
+                tmp['n_held_cells'] = 0
+            else:
+                tmp['n_held_cells'] = len(list(units.values())[0])
+
+        out.append(tmp)
+
+    return pd.DataFrame(out)
+
+
+def NB_classifier_accuracy(group, label_col, state_col, all_units):
+    '''uses rec_dir and hmm_id to creating firing rate array (trials x cells)
+    label_col is the column used to label trials, state_col is used to identify
+    which hmm state to use for classification
+
+    Parameters
+    ----------
+    group : pd.DataFrame
+        must have columns: rec_dir, hmm_id and columns that provide the labels
+        for classification and the hmm state to be used
+    label_col: str, column of dataframe that provides the classification labels
+    state_col: str, column of dataframe that provides the hmm state to use
+    all_units: pd.DataFrame
+        dataframe of all units with columns rec_dir, area, single_unit, held_unit_name
+
+    Returns
+    -------
+    float : accuracy [0,1]
+    '''
+    labels, rates, identifiers = get_classifier_data(group, label_col, state_col, all_units)
+    if labels is None:
+        return None
+
+    n_cells = rates.shape[1]
+    if n_cells < 2:
+        return None
+
+    # Check to make sure all expected tastes are present in the acquired data,
+    # since trials are dropped if the first appearance of the state in the
+    # trial is less than min_dur (50 ms)
+    expected_tastes = group.taste.to_list()
+    if not all([x in labels for x in expected_tastes]):
+        return None
+
+    model = stats.NBClassifier(labels, rates, row_id=identifiers)
+    results = model.leave1out_fit()
+    return results
+
+
+def LDA_classifier_accuracy(group, label_col, state_col, all_units):
+    '''uses rec_dir and hmm_id to creating firing rate array (trials x cells)
+    label_col is the column used to label trials, state_col is used to identify
+    which hmm state to use for classification
+
+    Parameters
+    ----------
+    group : pd.DataFrame
+        must have columns: rec_dir, hmm_id and columns that provide the labels
+        for classification and the hmm state to be used
+    label_col: str, column of dataframe that provides the classification labels
+    state_col: str, column of dataframe that provides the hmm state to use
+    all_units: pd.DataFrame
+        dataframe of all units with columns rec_dir, area, single_unit, held_unit_name
+
+    Returns
+    -------
+    float : accuracy [0,1]
+    '''
+    labels, rates, identifiers = get_classifier_data(group, label_col, state_col, all_units)
+    if labels is None:
+        return None
+
+    n_cells = rates.shape[1]
+    if n_cells < 2:
+        return None
+
+    model = stats.LDAClassifier(labels, rates, row_id=identifiers)
+    results = model.leave1out_fit()
+    return results
+
+
+def NB_classifier_confusion(group, label_col, state_col, all_units,
+                            train_labels=None, test_labels=None):
+    if len(train_labels) != 2:
+        raise ValueError('2 training labels are required for confusion calculations')
+
+    if len(test_labels) != 1:
+        raise ValueError('Too many test labels')
+
+    labels, rates, identifiers = get_classifier_data(group,  label_col, state_col, all_units)
+    if labels is None:
+        return None
+
+    n_cells = rates.shape[1]
+    if n_cells < 2:
+        return None
+
+    train_idx = np.where([x in train_labels for x in labels])[0]
+    test_idx = np.where([x in test_labels for x in labels])[0]
+    model = stats.NBClassifier(labels[train_idx], rates[train_idx, :],
+                               row_id=identifiers[train_idx, :])
+    model.fit()
+    predictions = model.predict(rates[test_idx, :])
+    counts = [np.sum(predictions == x) for x in train_labels]
+    return 100 * np.sum(predictions == 'Quinine') / len(predictions)
+    #return counts[1]/np.sum(counts)
+
+
+def LDA_classifier_confusion(group, label_col, state_col, all_units,
+                            train_labels=None, test_labels=None):
+    if len(train_labels) != 2:
+        raise ValueError('2 training labels are required for confusion calculations')
+
+    if len(test_labels) != 1:
+        raise ValueError('Too many test labels')
+
+    labels, rates, identifiers = get_classifier_data(group,  label_col, state_col, all_units)
+    if labels is None:
+        return None
+
+    n_cells = rates.shape[1]
+    if n_cells < 2:
+        return None
+
+    train_idx = np.where([x in train_labels for x in labels])[0]
+    test_idx = np.where([x in test_labels for x in labels])[0]
+    model = stats.LDAClassifier(labels[train_idx], rates[train_idx, :],
+                                row_id=identifiers[train_idx, :])
+    model.fit()
+    predictions = model.predict(rates[test_idx, :])
+    counts = [np.sum(predictions == x) for x in train_labels]
+    return 100 * np.sum(predictions == 'Quinine') / len(predictions)
+    #return counts[1]/np.sum(counts)
+
+
+## State timing analysis ##
+def analyze_hmm_state_timing(best_hmms, min_dur=50):
+    '''create output array with columns: exp_name, exp_group, rec_dir,
+    rec_group, time_group, cta_group, taste, hmm_id, trial, state_group,
+    state_num, t_start, t_end, duration
+    ignore trials with only 1 state > min_dur ms
+    '''
+    out_keys = ['exp_name', 'exp_group', 'cta_group', 'time_group', 'palatability',
+                'rec_group', 'rec_dir', 'n_cells', 'taste', 'hmm_id', 'trial',
+                'state_group', 'state_num', 't_start', 't_end', 'duration', 'pos_in_trial',
+                'unit_type', 'area', 'dt', 'n_states', 'notes']
+    best_hmms = best_hmms.dropna(subset=['hmm_id', 'early_state', 'late_state']).copy()
+    best_hmms.loc[:,'hmm_id'] = best_hmms['hmm_id'].astype('int')
+    id_cols = ['exp_name', 'exp_group', 'time_group', 'cta_group', 'rec_group',
+               'rec_dir', 'taste', 'hmm_id', 'palatability']
+    param_cols = ['n_cells', 'n_states', 'dt', 'area', 'unit_type', 'notes']
+    # State group is early or late
+    out = []
+    for i, row in best_hmms.iterrows():
+        template = dict.fromkeys(out_keys)
+        for k in id_cols:
+            template[k] = row[k]
+
+        h5_file = get_hmm_h5(row['rec_dir'])
+        hmm, time, params = ph.load_hmm_from_hdf5(h5_file, row['hmm_id'])
+        for k in param_cols:
+            template[k] = params[k]
+
+        dt = params['dt'] * 1000  # dt in ms
+        row_id = hmm.stat_arrays['row_id'] # hmm_id, channel, taste, trial, all string
+        best_seqs = hmm.stat_arrays['best_sequences']
+        for ids, path in zip(row_id, best_seqs):
+            tmp = template.copy()
+            tmp['trial'] = int(ids[-1])
+            summary = summarize_sequence(path).astype('int')
+            summary = summary[np.where(summary[:,-1] >= min_dur/dt)[0], :]
+            # Skip single state trials
+            if summary.shape[0] < 2:
+                #continue
+                # Instead mark single state trials
+                tmp['single_state'] = True
+            else:
+                tmp['single_state'] = False
+
+            early_flag = False
+            late_flag = False
+            for j, s_row in enumerate(summary):
+                s_tmp = tmp.copy()
+                s_tmp['state_num'] = s_row[0]
+                s_tmp['t_start'] = time[s_row[1]]
+                s_tmp['t_end'] = time[s_row[2]]
+                s_tmp['duration'] = s_row[3]/dt
+                # only first appearance of state is marked as early or late
+                if s_row[0] == row['early_state'] and not early_flag:
+                    s_tmp['state_group'] = 'early'
+                    early_flag = True
+                elif s_row[0] == row['late_state'] and not late_flag:
+                    s_tmp['state_group'] = 'late'
+                    late_flag = True
+
+                s_tmp['pos_in_trial'] = j
+                out.append(s_tmp)
+
+    return pd.DataFrame(out)
+
+
+def describe_hmm_state_timings(timing):
+    def header(txt):
+        tmp = '-'*80 + '\n' + txt + '\n' + '-'*80
+        return tmp
+
+    # First look at Saccharin
+    sdf = timing.query('taste == "Saccharin"')
+    esdf = sdf.query('state_group == "early"')
+    lsdf = sdf.query('state_group == "late"')
+    out = []
+
+    out.append(header('Saccharin Early State Analysis'))
+    out.append('Animals in data & trial counts')
+    out.append(esdf.groupby(['exp_name', 'exp_group', 'cta_group',
+                             'time_group'])['trial'].count().to_string())
+    out.append('')
+    out.append('Single State Trials: %i' % esdf.single_state.sum())
+    out.append('Single state trials removed for analysis')
+    out.append('')
+    out.append('Early State End Times')
+    out.append('='*80)
+    esdf = esdf.query('single_state == False') # drop single state trials
+    out.append(esdf.groupby(['exp_group',
+                             'time_group'])['t_end'].describe().to_string())
+    out.append('')
+    out.append(esdf.groupby(['cta_group',
+                             'time_group'])['t_end'].describe().to_string())
+    out.append('')
+    out.append('Mixed Anova')
+    aov = esdf.mixed_anova(dv='t_end', between='exp_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+    aov = esdf.mixed_anova(dv='t_end', between='cta_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+    out.append('*'*80)
+
+    out.append('Now after dropping GFP animals that did not learn')
+    tmp = esdf.query('(exp_group == "Cre") or '
+                     '(exp_group == "GFP" and cta_group == "CTA")')
+    out.append(tmp.groupby(['exp_group',
+                             'time_group'])['t_end'].describe().to_string())
+    out.append('')
+    out.append(tmp.groupby(['cta_group',
+                             'time_group'])['t_end'].describe().to_string())
+    out.append('')
+    out.append('Mixed Anova')
+    aov = tmp.mixed_anova(dv='t_end', between='exp_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+
+    out.append('Early State Durations')
+    out.append('='*80)
+    out.append(esdf.groupby(['exp_group',
+                             'time_group'])['duration'].describe().to_string())
+    out.append('')
+    out.append(esdf.groupby(['cta_group',
+                             'time_group'])['duration'].describe().to_string())
+    out.append('')
+    out.append('Mixed Anova')
+    aov = esdf.mixed_anova(dv='duration', between='exp_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+    aov = esdf.mixed_anova(dv='duration', between='cta_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+    out.append('*'*80)
+
+    out.append('Now after dropping GFP animals that did not learn')
+    out.append(tmp.groupby(['exp_group',
+                             'time_group'])['duration'].describe().to_string())
+    out.append('')
+    out.append(tmp.groupby(['cta_group',
+                             'time_group'])['duration'].describe().to_string())
+    out.append('')
+    out.append('Mixed Anova')
+    aov = tmp.mixed_anova(dv='duration', between='exp_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+
+    out.append(header('Saccharin Late State Analysis'))
+    out.append('Animals in data & trial counts')
+    out.append(lsdf.groupby(['exp_name', 'exp_group', 'cta_group',
+                             'time_group'])['trial'].count().to_string())
+    out.append('')
+    out.append('Single State Trials: %i' % lsdf.single_state.sum())
+    out.append('Single state trials removed for analysis')
+    out.append('')
+    out.append('Late State End Times')
+    out.append('='*80)
+    lsdf = lsdf.query('single_state == False') # drop single state trials
+    out.append(lsdf.groupby(['exp_group',
+                             'time_group'])['t_start'].describe().to_string())
+    out.append('')
+    out.append(lsdf.groupby(['cta_group',
+                             'time_group'])['t_start'].describe().to_string())
+    out.append('')
+    out.append('Mixed Anova')
+    aov = lsdf.mixed_anova(dv='t_start', between='exp_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+    aov = lsdf.mixed_anova(dv='t_start', between='cta_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+    out.append('*'*80)
+
+    out.append('Now after dropping GFP animals that did not learn')
+    tmp = lsdf.query('(exp_group == "Cre") or '
+                     '(exp_group == "GFP" and cta_group == "CTA")')
+    out.append(tmp.groupby(['exp_group',
+                             'time_group'])['t_start'].describe().to_string())
+    out.append('')
+    out.append(tmp.groupby(['cta_group',
+                             'time_group'])['t_start'].describe().to_string())
+    out.append('')
+    out.append('Mixed Anova')
+    aov = tmp.mixed_anova(dv='t_start', between='exp_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+
+    out.append('Late State Durations')
+    out.append('='*80)
+    out.append(lsdf.groupby(['exp_group',
+                             'time_group'])['duration'].describe().to_string())
+    out.append('')
+    out.append(lsdf.groupby(['cta_group',
+                             'time_group'])['duration'].describe().to_string())
+    out.append('')
+    out.append('Mixed Anova')
+    aov = lsdf.mixed_anova(dv='duration', between='exp_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+    aov = lsdf.mixed_anova(dv='duration', between='cta_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+    out.append('*'*80)
+
+    out.append('Now after dropping GFP animals that did not learn')
+    out.append(tmp.groupby(['exp_group',
+                             'time_group'])['duration'].describe().to_string())
+    out.append('')
+    out.append(tmp.groupby(['cta_group',
+                             'time_group'])['duration'].describe().to_string())
+    out.append('')
+    out.append('Mixed Anova')
+    aov = tmp.mixed_anova(dv='duration', between='exp_group',
+                           within='time_group', subject='exp_name')
+    out.append(aov.to_string(index=False))
+    out.append('')
+    return '\n'.join(out)
 
 
 

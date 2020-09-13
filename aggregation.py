@@ -2,6 +2,7 @@ import blechpy
 import os
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from sklearn.decomposition import PCA
 from scipy.ndimage.filters import gaussian_filter1d
 from scipy.stats import sem
@@ -10,6 +11,11 @@ from blechpy.analysis import held_unit_analysis as hua
 from blechpy.analysis import spike_analysis as sas
 from blechpy.dio import h5io
 from blechpy.utils import print_tools as pt
+
+
+PAL_MAP = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
+           'Citric Acid': 2, 'NaCl': 3}
+
 
 def get_all_units(proj):
     # Columns:
@@ -143,7 +149,6 @@ def find_held_units(proj, percent_criterion=95, raw_waves=False):
     # Save dataframes
 
 
-
 def get_inter_J3(rec1, unit1, rec2, unit2, raw_waves=False):
     if raw_waves:
         wf1, descrip1, fs1 = h5io.get_raw_unit_waveforms(rec1, unit1)
@@ -164,6 +169,7 @@ def get_inter_J3(rec1, unit1, rec2, unit2, raw_waves=False):
 
     J3 = hua.calc_J3(pca_wf1, pca_wf2)
     return J3
+
 
 def get_unit_J3(rec_dir, unit, raw_waves=False):
     print('Getting intra-recording J3 for %s :: %s' % (rec_dir, unit))
@@ -290,6 +296,7 @@ def get_firing_rate_trace(rec, unit, ch, bin_size, step_size=None, t_start=None,
 
     return bin_time, FR, (baseline, baseline_sem)
 
+
 def get_psth(rec, unit, ch, params, remove_baseline=False):
     baseline_win = params['baseline_comparison']['win_size']
     psth_bin = params['psth']['win_size']
@@ -306,3 +313,21 @@ def get_psth(rec, unit, ch, params, remove_baseline=False):
                                                remove_baseline=False)
 
     return pt, psth, baseline
+
+
+def fix_palatability(proj, pal_map=None):
+    '''Goes through all datasets in project and fixes palatability rankings
+    '''
+    if pal_map is None:
+        pal_map = PAL_MAP
+
+    exp_dirs = proj._exp_info.exp_dir.to_list()
+
+    for exp_dir in tqdm(exp_dirs):
+        exp = blechpy.load_experiment(exp_dir)
+        for rd in exp.recording_dirs:
+            dat = blechpy.load_dataset(rd)
+            dat.dig_in_mapping['palatability_rank'] = dat.dig_in_mapping.name.map(pal_map)
+            h5io.write_digital_map_to_h5(dat.h5_file, dat.dig_in_mapping, 'in')
+            dat.save()
+

@@ -1,8 +1,12 @@
 import numpy as np
+import itertools as it
 from joblib import Parallel, delayed, cpu_count
-from scipy.stats import t, fisher_exact
+from scipy.stats import t, fisher_exact, shapiro, levene
 from sklearn.model_selection import LeavePOut
 from sklearn.naive_bayes import GaussianNB
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
+from statsmodels.formula.api import ols
+import statsmodels.api as sm
 
 
 def dunnetts_post_hoc(X0, X, alpha):
@@ -35,6 +39,7 @@ def dunnetts_post_hoc(X0, X, alpha):
 
 def fisher_test_response_changes(labels, time, pvals):
     pass
+
 
 def permutation_test(labels, data, alpha=0.05, group_col=0, n_boot=10000, n_cores=1):
     '''data should be for a single tastant and 2 groups
@@ -87,7 +92,6 @@ def permutation_test(labels, data, alpha=0.05, group_col=0, n_boot=10000, n_core
     return out_p, test_stat, out_n_sig
 
 
-
 def bootstrap_diff(lbls, data, agg_func=np.sum):
     n_samp = data.shape[0]
     idx = np.random.permutation(n_samp)
@@ -119,8 +123,6 @@ def bootstrap(data, n_boot=10000, alpha=0.05, n_cores=1, func=np.sum):
     return np.mean(means, axis=0), lower, upper
 
 
-
-
 class NBClassifier(object):
     def __init__(self, y, X, row_id=None):
         self.Y = y
@@ -129,6 +131,14 @@ class NBClassifier(object):
         self.result = None
 
     def fit(self):
+        gnb = GaussianNB()
+        gnb.fit(self.X, self.Y)
+        self.model=gnb
+
+    def predict(self, X):
+        return self.model.predict(X)
+
+    def leave1out_fit(self):
         X = self.X
         Y = self.Y
         lpo = LeavePOut(1)
@@ -145,35 +155,160 @@ class NBClassifier(object):
             predictions[test_idx] = y_pred[0]
             correct += (test_y == y_pred).sum()
 
+        full_model = GaussianNB()
+        full_model.fit(X,Y)
         accuracy = 100* (correct/n_splits)
-        self.result = ClassifierResult(accuracy, X, Y, y_pred, row_id=self.row_id)
+        self.model = full_model
+        self.result = ClassifierResult(accuracy, X, Y, predictions, row_id=self.row_id, model=full_model)
         return self.result
 
 
 class LDAClassifier(object):
-    def __init__(self, y, X, row_id=None):
+    def __init__(self, y, X, row_id=None, n_components=2):
         self.Y = y
         self.X = X
         self.row_id = row_id
         self.result = None
+        self.model = None
+        self.n_components = n_components
 
     def fit(self):
         X = self.X
         Y = self.Y
-        lda = LDA(n_components=2)
+        lda = LDA(n_components=self.n_components)
         new_X = lda.fit_transform(X, Y)
         y_pred = lda.predict(X)
-        accuracy = 100* ((y_pred == Y).sum() / Y.shape[0])
-        self.result = ClassifierResult(accuracy, new_X, Y, y_pred,
-                                       row_id=self.row_id, model=lda)
+        self.model = lda
+
+    def predict(self, X):
+        return self.model.predict(X)
+
+    def leave1out_fit(self):
+        X = self.X
+        Y = self.Y
+        lpo = LeavePOut(1)
+        n_splits = lpo.get_n_splits(Y)
+        correct = 0
+        predictions = np.zeros((n_splits,), object)
+        for train_idx, test_idx in lpo.split(Y):
+            lda = LDA(n_components=self.n_components)
+            new_X = lda.fit_transform(X[train_idx,:], Y[train_idx])
+            y_pred = lda.predict(X[test_idx,:])
+            correct += (Y[test_idx] == y_pred).sum()
+            predictions[test_idx] = y_pred[0]
+
+        full_model = LDA(n_components=self.n_components)
+        new_X = full_model.fit_transform(X, Y)
+        self.model = full_model
+        accuracy = 100* ((predictions == Y).sum() / Y.shape[0])
+        self.result = ClassifierResult(accuracy, new_X, Y, predictions,
+                                       row_id=self.row_id, model=full_model)
         return self.result
 
 
-def ClassifierResult(object):
+class ClassifierResult(object):
     def __init__(self, accuracy, x, y, y_pred, row_id=None, model=None):
+        # fully trained model, leave1out accuracy, leave1out predictions
         self.accuracy = accuracy
         self.X = x
         self.Y = y
         self.Y_predicted = y_pred
         self.model = model
         self.row_id = row_id
+
+
+def anova_3way(df, value_col, factor_cols, alpha=0.05):
+    aov_tables = []
+    comparisons = []
+    comp_str = value_col + ' ~ '
+    factor_strs = ['C(%s, Sum)' % x for x in factor_cols]
+    if len(factor_cols) > 3:
+        raise ValueError('Too Many Factors')
+
+    # First check to see if the 3-way interaction is significant
+    comp_str += ' + '.join(factor_strs) + ' + ' + '*'.join(factor_strs)
+    test_key = ':'.join(factor_strs)
+    model1 = ols(comp_str, data=df).fit()
+    aov1 = sm.stats.anova_lm(model1, typ=3)
+    # Include normality test on residuals
+    aov1.loc['Shapiro_Wilk', ['F', 'PR(>F)']] = shapiro(model1.resid)
+    if aov1.loc[test_key, 'PR(>F)'] <= alpha:
+        return [aov1], [comp_str]
+
+    aov_tables.append(aov1)
+    comparisons.append(comp_str)
+
+    # If 3-way interaction is not significant then drop 3-way and re-run and
+    # look at 2-ways
+    comp_str = value_col + ' ~ '
+    comp_str += ' + '.join(factor_strs)
+    combo_keys = []
+    for a,b in it.combinations(factor_strs, 2):
+        comp_str += ' + %s:%s' % (a,b)
+        combo_keys.append('%s:%s' % (a,b))
+
+    while len(combo_keys) > 0:
+        model2 = ols(comp_str, data=df).fit()
+        aov2 = sm.stats.anova_lm(model2, typ=3)
+        # Include normality test on residuals
+        aov2.loc['Shapiro_Wilk', ['F', 'PR(>F)']] = shapiro(model2.resid)
+        aov_tables.append(aov2)
+        comparisons.append(comp_str)
+        # Find any non-significant 2-factor interactions and drop them
+        all_sig = True
+        drop = []
+        for i, x in enumerate(combo_keys):
+            if aov2.loc[x, 'PR(>F)'] > alpha:
+                all_sig = False
+                comp_str = comp_str.replace(' + %s' % x, '')
+                drop.append(i)
+
+        if all_sig:
+            return aov_tables, comparisons
+
+        drop.reverse()
+        for i in drop:
+            combo_keys.pop(i)
+
+    # If we get here is mean none of the 2-factor or 3-factor interactions were
+    # significant, so run it one more time with just single factors and return
+    comp_str = value_col + ' ~ ' + ' + '.join(factor_strs)
+    model3 = ols(comp_str, data=df).fit()
+    aov3 = sm.stats.anova_lm(model3, typ=3)
+    # Include normality test on residuals
+    aov3.loc['Shapiro_Wilk', ['F', 'PR(>F)']] = shapiro(model3.resid)
+    aov_tables.append(aov3)
+    comparisons.append(comp_str)
+    return aov_tables, comparisons
+
+
+def test_anova_assumptions(df, dv, between, within):
+    '''Test assumptions for using mixed_anova
+    '''
+    # Sample size: At least 20 samples per group
+    # Normality: The dependent variable is normally distributed (shapiro-wilke test)
+    # Homogeneity of variance: equal variances (levene's test)
+    # Sphericity: Mauchly's Test (if failed can still use Greenhouse-Geisser adjusted p-vals)
+    # Homogeneity of inter-correlations: Box's M test
+    out = {'sample_size': True, 'normality': True, 'variance': True, 'sphericity': True, 'intercorr': True}
+    all_samples = []
+    for name, group in df.groupby([between, within]):
+        if len(group) < 20:
+            out['sample_size'] = False
+
+        stat, p = shaprio(group[dv])
+        if p < 0.05:
+            out['normality'] = False
+
+        all_samples.append(group[dv].to_numpy())
+
+    W, p = levene(*all_samples)
+    if p < 0.05:
+        out['variance'] = False
+
+    return out
+
+
+
+
+

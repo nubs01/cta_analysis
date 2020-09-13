@@ -165,3 +165,8 @@ HMM Testing
     - try randomly dropping spikes 
     - Try training on single trial until convergence
     - Try hold-on-out jackknife training 
+
+
+9/2/20 Issues
+hmm_analysis 1168 & 1194 , divide by zero with confusion metric
+LDA analysis : colinearity between predictors
