@@ -114,9 +114,9 @@ def plot_held_unit_comparison(rec1, unit1, rec2, unit2, pvals, params,
                                            baseline_win=baseline_win,
                                            remove_baseline=True)
 
-    pt1, psth1, _ = agg.get_psth(rec1, unit1, ch1, params)
+    pt1, psth1, _ = agg.get_psth(rec1, unit1, ch1, params, remove_baseline=True)
 
-    pt2, psth2, _ = agg.get_psth(rec2, unit2, ch2, params)
+    pt2, psth2, _ = agg.get_psth(rec2, unit2, ch2, params, remove_baseline=True)
 
     fig = plt.figure(figsize=(8, 11))
     ax = fig.add_subplot('111')
@@ -344,7 +344,7 @@ def plot_held_percent_changed(labels, time, pvals, diff_time, mean_diffs,
     outer_ax2.spines['right'].set_color('none')
     outer_ax2.tick_params(labelcolor='w', top=False, bottom=False, left=False, right=False)
     outer_ax2.set_xlabel('Time (ms)')
-    outer_ax2.set_ylabel('Avg Magnitude of Difference (Hz)')
+    outer_ax2.set_ylabel('Median Magnitude of Difference (Hz)', labelpad=10)
 
     axes = [fig.add_subplot(Ngrp, 2, 2*i+1) for i in range(Ngrp)]
     mag_axes = [fig.add_subplot(Ngrp, 2, 2+ 2*i) for i in range(Ngrp)]
@@ -393,12 +393,15 @@ def plot_held_percent_changed(labels, time, pvals, diff_time, mean_diffs,
 
         MD = np.mean(np.abs(meanD), axis=0)
         semD = np.sqrt(np.sum(np.power(semD, 2), axis=0))
+        # Try plotting median magnitude of change
+        #MD = np.median(np.abs(meanD), axis=0)
+        #semD = 
         m_ax.plot(diff_time, MD, linewidth=2, color='k')
         m_ax.fill_between(diff_time, MD - semD, MD + semD, color='k', alpha=0.4)
         m_ax.axvline(0, color='k', linestyle='--', linewidth=1)
         m_ax.set_xlim([diff_time[0], diff_time[-1]])
 
-    mag_axes[0].set_title('Average Magnitude of Change')
+    mag_axes[0].set_title('Median Magnitude of Change')
     axes[0].set_title('Percent Held Unit Responses Changed')
     fig.suptitle('%s' % taste)
 
@@ -410,10 +413,14 @@ def plot_held_percent_changed(labels, time, pvals, diff_time, mean_diffs,
         return None, None
 
 
-def plot_PSTHs(rec, unit, params, save_file):
+def plot_PSTHs(rec, unit, params, save_file=None, ax=None):
     dat = load_dataset(rec)
     dim = dat.dig_in_mapping.set_index('name')
-    fig, ax = plt.subplots(figsize=(15,10))
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(15,10))
+    else:
+        fig = ax.figure
+
     for taste, row in dim.iterrows():
         ch = row['channel']
         pt, psth, _ = agg.get_psth(rec, unit, ch, params)
@@ -436,9 +443,91 @@ def plot_PSTHs(rec, unit, params, save_file):
     if not os.path.isdir(os.path.dirname(save_file)):
         os.mkdir(os.path.dirname(save_file))
 
-    fig.savefig(save_file)
-    plt.close(fig)
-    return
+    if save_file is not None:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return
+    else:
+        return fig, ax
+
+
+def plot_sacc_psth_heatmap(held_df, save_dir):
+    df = held_df.query('held_over == "cta" and area == "GC"').dropna(subset=['held_unit_name'])
+    params = {'psth': {'win_size': 250, 'step_size': 25,
+                       'smoothing_win': 0, 'plot_window': [-250, 1500]},
+              'baseline_comparison': {'win_size': 1000}}
+
+    for i, row in df.iterrows():
+        rec1 = row['rec1']
+        rec2 = row['rec2']
+        unit1 = row['unit1']
+        unit2 = row['unit2']
+        unit_name = row['held_unit_name']
+        exp_group= row['exp_group']
+        exp_name = row['exp_name']
+        fn = os.path.join(save_dir, '%s_unit-%i_heatmap.png' % (exp_group, unit_name))
+        title = ('%s: %s: Held Unit #%i' % (exp_group, exp_name, unit_name))
+
+        dat1 = load_dataset(rec1)
+        dat2 = load_dataset(rec2)
+        dim1 = dat1.dig_in_mapping.set_index('name')
+        dim2 = dat2.dig_in_mapping.set_index('name')
+        ch1 = dim1.loc['Saccharin', 'channel']
+        ch2 = dim2.loc['Saccharin', 'channel']
+        t1, psth1, _ = agg.get_psth(rec1, unit1, ch1, params)
+        t2, psth2, _ = agg.get_psth(rec2, unit2, ch2, params)
+        id1 = np.vstack(['preCTA']*psth1.shape[0])
+        id2 = np.vstack(['postCTA']*psth2.shape[0])
+        row_id = np.vstack([id1, id2])
+        data = np.vstack([psth1, psth2])
+        peak_time = np.argmax(data, axis=1)
+        fig, ax = grouped_heatmap(data, row_id, peak_time, X=t1, smoothing_width=3)
+        ax.set_title(title)
+        fig.savefig(fn)
+        plt.close(fig)
+
+
+def plot_sacc_psths(held_df, save_dir):
+    df = held_df.query('held_over == "cta" and area == "GC"').dropna(subset=['held_unit_name'])
+    params = {'psth': {'win_size': 25, 'step_size': 25, 'smoothing_win': 0, 'plot_window': [-250, 1500]},
+              'baseline_comparison': {'win_size': 1000}}
+    for i, row in df.iterrows():
+        rec1 = row['rec1']
+        rec2 = row['rec2']
+        unit1 = row['unit1']
+        unit2 = row['unit2']
+        unit_name = row['held_unit_name']
+        exp_group= row['exp_group']
+        exp_name = row['exp_name']
+        fn = os.path.join(save_dir, '%s_unit-%i.png' % (exp_group, unit_name))
+        title = ('%s: %s: Held Unit #%i' % (exp_group, exp_name, unit_name))
+
+        dat1 = load_dataset(rec1)
+        dat2 = load_dataset(rec2)
+        dim1 = dat1.dig_in_mapping.set_index('name')
+        dim2 = dat2.dig_in_mapping.set_index('name')
+        ch1 = dim1.loc['Saccharin', 'channel']
+        ch2 = dim2.loc['Saccharin', 'channel']
+        t1, psth1, _ = agg.get_psth(rec1, unit1, ch1, params)
+        t2, psth2, _ = agg.get_psth(rec2, unit2, ch2, params)
+        fig, ax = plt.subplots(figsize=(15,10))
+        for trace in psth1:
+            ax.plot(t1, trace, color='b', linewidth=1, alpha=0.3)
+
+        for trace in psth2:
+            ax.plot(t2, trace, color='r', linewidth=1, alpha=0.3)
+
+        mp1 = np.mean(psth1, axis=0)
+        mp2 = np.mean(psth2, axis=0)
+        ax.plot(t1, mp1, color='b', linewidth=3, label='preCTA')
+        ax.plot(t2, mp2, color='r', linewidth=3, label='postCTA')
+        ax.axvline(0, color='k', linewidth=1, linestyle='--')
+        ax.legend()
+        ax.set_title(title)
+        ax.set_xlabel('Time (ms)')
+        ax.set_ylabel('Firing Rate (Hz)')
+        fig.savefig(fn)
+        plt.close(fig)
 
 
 def plot_palatability_correlation(rec_name, unit_name, time, spearman_r, spearman_p,
@@ -961,6 +1050,7 @@ def plot_mds_metric(df, save_file):
     plt.close(g.fig)
     g.fig.savefig(save_file)
 
+
 def plot_animal_pca(df, save_dir):
     if not os.path.isdir(save_dir):
         os.makedirs(save_dir)
@@ -1029,7 +1119,6 @@ def plot_animal_mds(df, save_dir):
         plt.close(fig)
 
 
-
 def add_suplabels(fig, title, xlabel, ylabel):
     ax = fig.add_subplot('111')
     ax.spines['top'].set_color('none')
@@ -1061,7 +1150,6 @@ def plot_state_breakdown(df, save_dir):
         fn = os.path.join(save_dir, 'hmm_%s.svg' % v)
         g.fig.savefig(fn)
         plt.close(g.fig)
-
 
 
 def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
@@ -1187,6 +1275,75 @@ def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
         fig.savefig(save_file)
         plt.close(fig)
         return None
+
+
+def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None):
+    hmms = best_hmms.dropna(subset=['hmm_id'])
+    tastes = best_hmms.taste.unique()
+    fig, axes = plt.subplots(ncols=len(tastes), figsize=(5+5*len(tastes), 10))
+    time_vec = None
+    if len(tastes) == 1:
+        axes = [axes]
+
+    for ax, tst in zip(axes, tastes):
+        df = hmms.query('taste == @tst')
+        sequences = []
+        row_id = []
+        sort_stat = []
+        for i, row in df.iterrows():
+            h5_file = get_hmm_h5(row['rec_dir'])
+            hmm, time, params = phmm.load_hmm_from_hdf5(h5_file, row['hmm_id'])
+            if time_vec is None:
+                time_vec = time
+            elif not np.array_equal(time_vec, time):
+                continue
+
+            seqs = hmm.stat_arrays['best_sequences']
+
+            # Only include trials where both early and late states are present
+            min_pts = int(50 / (1000*params['dt']))
+            e_trials = get_valid_trials(seqs, row['early_state'], min_pts=min_pts, time=time)
+            l_trials = get_valid_trials(seqs, row['late_state'], min_pts=min_pts, time=time)
+            valid_trials = np.intersect1d(e_trials, l_trials)
+            if len(valid_trials) == 0:
+                print('No valid trials found for %s %s %s' % (row['exp_name'], row['rec_group'], tst))
+                continue
+
+            seqs = seqs[valid_trials, :]
+
+            sequences.append(seqs)
+            rid = '%s\n%s' % (row[group_col], row['time_group'])
+            row_id.extend([rid]*seqs.shape[0])
+            # Sort by late state start time
+            for trial in seqs:
+                if row['late_state'] in trial:
+                    sort_stat.append(np.where(trial==row['late_state'])[0][0])
+                else:
+                    sort_stat.append(-1)
+
+        sort_stat = np.array(sort_stat)
+        row_id = np.array(row_id)
+        sequences = np.vstack(sequences)
+        if ax.is_last_col():
+            cbar = True
+        else:
+            cbar = False
+
+        _, ax = grouped_heatmap(sequences, row_id, sort_stat, X=time, ax=ax, cbar=cbar)
+        #ax.set_xticks(np.linspace(time[0], time[-1], 10))
+        ax.axvline(np.where(time==0)[0], color='b', linewidth=3, linestyle='--')
+        ax.yaxis.set_tick_params(length=0, labelrotation=0)
+        ax.set_title(tst)
+
+    fig.subplots_adjust(top=0.85)
+    fig.suptitle('HMM State Sequences')
+
+    if save_file is not None:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return
+    else:
+        return fig, ax
 
 
 def plot_classifier_results(group, early_res, late_res,
@@ -1353,13 +1510,13 @@ def plot_pal_classifier_results(group, early_res, late_res,
         fig.savefig(save_file)
         plt.close(fig)
 
+
 def plot_regression_results(group, state_set, early_pal=None, late_pal=None,
                             label=None, save_file=None):
     # Plot Residuals
     # Run PCA, plot 
     # Actually should be doing LDA classification instead of linear regression
     pass
-
 
 
 def change_hue(color, amount):
@@ -1455,10 +1612,14 @@ def plot_hmm_coding_accuracy(df, save_file=None):
     fig, axes = plt.subplots(nrows=5, ncols=2, figsize=(18,24))
     time_order = ['preCTA', 'postCTA']
     exp_order = ['Cre', 'GFP']
+    x_group = 'exp_group'
+    hue_group = 'time_group'
+    x_order = exp_order
+    hue_order = time_order
 
     df = df.dropna(subset=['early_ID_acc', 'late_ID_acc', 'early_pal_acc', 'late_pal_acc'])
-    g = sns.barplot(data=df, x='time_group', hue='exp_group',
-                    hue_order=exp_order, order=time_order,
+    g = sns.barplot(data=df, x=x_group, hue=hue_group,
+                    hue_order=hue_order, order=x_order,
                     ax=axes[0,0], y='early_ID_acc')
     g.axhline(100/3, color='k', linestyle='--', alpha=0.6)
     g.legend_.remove()
@@ -1466,8 +1627,8 @@ def plot_hmm_coding_accuracy(df, save_file=None):
     g.set_xlabel('')
     g.set_title('ID Classification')
 
-    g = sns.barplot(data=df, x='time_group', hue='exp_group',
-                    hue_order=exp_order, order=time_order,
+    g = sns.barplot(data=df, x=x_group, hue=hue_group,
+                    hue_order=hue_order, order=x_order,
                     ax=axes[1,0], y='late_ID_acc')
     g.axhline(100/3, color='k', linestyle='--', alpha=0.6)
     g.legend_.remove()
@@ -1475,8 +1636,8 @@ def plot_hmm_coding_accuracy(df, save_file=None):
     g.set_xlabel('')
     #g.set_title('Late-State ID Classification')
 
-    g = sns.barplot(data=df, x='time_group', hue='exp_group',
-                    hue_order=exp_order, order=time_order,
+    g = sns.barplot(data=df, x=x_group, hue=hue_group,
+                    hue_order=hue_order, order=x_order,
                     ax=axes[0,1], y='early_pal_acc')
     g.axhline(100/3, color='k', linestyle='--', alpha=0.6)
     g.legend_.remove()
@@ -1484,8 +1645,8 @@ def plot_hmm_coding_accuracy(df, save_file=None):
     g.set_xlabel('')
     g.set_title('Palatability Classification')
 
-    g = sns.barplot(data=df, x='time_group', hue='exp_group',
-                    hue_order=exp_order, order=time_order,
+    g = sns.barplot(data=df, x=x_group, hue=hue_group,
+                    hue_order=hue_order, order=x_order,
                     ax=axes[1,1], y='late_pal_acc')
     g.axhline(100/3, color='k', linestyle='--', alpha=0.6)
     g.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
@@ -1513,26 +1674,41 @@ def plot_hmm_coding_accuracy(df, save_file=None):
     g.set_xlabel('Early Pal ACC')
 
     # Bar plot of confusion
-    g = sns.barplot(data=df, x='time_group', order=time_order, hue='exp_group',
-                    hue_order=exp_order, ax=axes[2,0], y='early_ID_confusion')
+    def get_confusion(tup):
+        # compute confusion value from tuple with (n_NaCl, n_Quinine)
+        # right now I'm outputing % nacl classifications
+        return 100  * tup[0] / np.sum(tup)
+
+    # df['eid_con'] = df['early_ID_confusion'].apply(get_confusion)
+    # df['lid_con'] = df['late_ID_confusion'].apply(get_confusion)
+    # df['epal_con'] = df['early_pal_confusion'].apply(get_confusion)
+    # df['lpal_con'] = df['late_pal_confusion'].apply(get_confusion)
+    df = df.copy()
+    df['eid_con'] = df['early_ID_confusion']
+    df['lid_con'] = df['late_ID_confusion']
+    df['epal_con'] = df['early_pal_confusion']
+    df['lpal_con'] = df['late_pal_confusion']
+
+    g = sns.barplot(data=df, x=x_group, order=x_order, hue=hue_group,
+                    hue_order=hue_order, ax=axes[2,0], y='eid_con')
     g.legend_.remove()
-    g.set_ylabel('Early\nCon')
+    g.set_ylabel('Early Con\n% NaCl')
     g.set_xlabel('')
 
-    g = sns.barplot(data=df, x='time_group', order=time_order, hue='exp_group',
-                    hue_order=exp_order, ax=axes[3,0], y='late_ID_confusion')
+    g = sns.barplot(data=df, x=x_group, order=x_order, hue=hue_group,
+                    hue_order=hue_order, ax=axes[3,0], y='lid_con')
     g.legend_.remove()
-    g.set_ylabel('Late\nCon')
+    g.set_ylabel('Late Con\n% NaCl')
     g.set_xlabel('')
 
-    g = sns.barplot(data=df, x='time_group', order=time_order, hue='exp_group',
-                    hue_order=exp_order, ax=axes[2,1], y='early_pal_confusion')
+    g = sns.barplot(data=df, x=x_group, order=x_order, hue=hue_group,
+                    hue_order=hue_order, ax=axes[2,1], y='epal_con')
     g.legend_.remove()
     g.set_ylabel('')
     g.set_xlabel('')
 
-    g = sns.barplot(data=df, x='time_group', order=time_order, hue='exp_group',
-                    hue_order=exp_order, ax=axes[3,1], y='late_pal_confusion')
+    g = sns.barplot(data=df, x=x_group, order=x_order, hue=hue_group,
+                    hue_order=hue_order, ax=axes[3,1], y='lpal_con')
     g.legend_.remove()
     g.set_ylabel('')
     g.set_xlabel('')
@@ -1548,82 +1724,111 @@ def plot_hmm_coding_accuracy(df, save_file=None):
     else:
         return fig
 
+
 def plot_hmm_timings(df, save_file=None):
     # time_group- col, state_group - row, exp_group - hue, taste - x
     # row 1: early state end time
     # row 2: late state start time
     # row 3: early state durations
     # row 4: late state durations
+    df = df.query('valid == True').copy()
     exp_order = ['Cre', 'GFP']
-    taste_order = ['Water', 'Citric Acid', 'Quinine', 'NaCl', 'Saccharin']
-    _ = taste_order.pop(0)
+    #taste_order = ['Water', 'Citric Acid', 'Quinine', 'NaCl', 'Saccharin']
+    taste_order = ['Saccharin']
+    time_order = ['preCTA', 'postCTA']
+    # _ = taste_order.pop(0)
     late_df = df.query('state_group == "late"')
     early_df = df.query('state_group == "early"')
-    fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15,18))
+    n_tastes = len(taste_order)
+    fig, axes = plt.subplots(nrows=4, ncols=n_tastes, figsize=(5*n_tastes+5,18))
+    if axes.ndim == 1:
+        axes = np.expand_dims(axes, 1)
 
     # Row 1
-    df1 = early_df.query('time_group == "preCTA"')
-    df2 = early_df.query('time_group == "postCTA"')
-    g = sns.boxplot(data=df1, x='taste', order=taste_order, hue='exp_group',
-                    hue_order=exp_order, ax = axes[0,0], y='t_end')
-    g.set_xlabel('')
-    g.set_ylabel('Early\nEnd')
-    g.legend_.remove()
-    g.set_title('Pre-CTA')
+    for ci, taste in enumerate(taste_order):
+        edf = early_df.query('taste == @taste')
+        ldf = late_df.query('taste == @taste')
+    # df1 = early_df.query('time_group == "preCTA"')
+    # df2 = early_df.query('time_group == "postCTA"')
+        g = sns.boxplot(data=edf, x='exp_group', order=exp_order, hue='time_group',
+                        hue_order=time_order, ax = axes[0,ci], y='t_end')
+        g.set_xlabel('')
+        if axes[0, ci].is_first_col():
+            g.set_ylabel('Early\nEnd')
+        else:
+            g.set_ylabel('')
 
-    g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
-                    hue_order=exp_order, ax = axes[0,1], y='t_end')
-    g.set_xlabel('')
-    g.set_ylabel('')
-    g.legend_.remove()
-    g.set_title('Post-CTA')
+        g.legend_.remove()
+        g.set_title(taste)
 
-    # Row 2
-    df1 = late_df.query('time_group == "preCTA"')
-    df2 = late_df.query('time_group == "postCTA"')
-    g = sns.boxplot(data=df1, x='taste', order=taste_order, hue='exp_group',
-                    hue_order=exp_order, ax = axes[1,0], y='t_start')
-    g.set_xlabel('')
-    g.set_ylabel('Late\nStart')
-    g.legend_.remove()
+    # g = sns.boxplot(data=df2, x='exp_group', order=exp_order, hue='time_group',
+    #                 hue_order=time_order, ax = axes[0,1], y='t_end')
+    # g.set_xlabel('')
+    # g.set_ylabel('')
+    # g.legend_.remove()
+    # g.set_title('Post-CTA')
 
-    g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
-                    hue_order=exp_order, ax = axes[1,1], y='t_start')
-    g.set_xlabel('')
-    g.set_ylabel('')
-    g.legend_.remove()
+        # Row 2
+    # df1 = late_df.query('time_group == "preCTA"')
+    # df2 = late_df.query('time_group == "postCTA"')
+        g = sns.boxplot(data=ldf, x='exp_group', order=exp_order, hue='time_group',
+                        hue_order=time_order, ax = axes[1,ci], y='t_start')
+        g.set_xlabel('')
+        if axes[0, ci].is_first_col():
+            g.set_ylabel('Late\nStart')
+        else:
+            g.set_ylabel('')
 
-    # Row 3
-    df1 = early_df.query('time_group == "preCTA"')
-    df2 = early_df.query('time_group == "postCTA"')
-    g = sns.boxplot(data=df1, x='taste', order=taste_order, hue='exp_group',
-                    hue_order=exp_order, ax = axes[2,0], y='duration')
-    g.set_xlabel('')
-    g.set_ylabel('Early\nDuration')
-    g.legend_.remove()
+        g.legend_.remove()
 
-    g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
-                    hue_order=exp_order, ax = axes[2,1], y='duration')
-    g.set_xlabel('')
-    g.set_ylabel('')
-    g.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+    # g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
+    #                 hue_order=exp_order, ax = axes[1,1], y='t_start')
+    # g.set_xlabel('')
+    # g.set_ylabel('')
+    # g.legend_.remove()
 
     # Row 3
-    df1 = late_df.query('time_group == "preCTA"')
-    df2 = late_df.query('time_group == "postCTA"')
-    g = sns.boxplot(data=df1, x='taste', order=taste_order, hue='exp_group',
-                    hue_order=exp_order, ax = axes[3,0], y='duration')
-    g.set_xlabel('')
-    g.set_ylabel('Late\nDuration')
-    g.legend_.remove()
+    # df1 = early_df.query('time_group == "preCTA"')
+    # df2 = early_df.query('time_group == "postCTA"')
+        g = sns.boxplot(data=edf, x='exp_group', order=exp_order, hue='time_group',
+                        hue_order=time_order, ax = axes[2,ci], y='duration')
+        g.set_xlabel('')
+        if axes[0, ci].is_first_col():
+            g.set_ylabel('Early\nDuration')
+        else:
+            g.set_ylabel('')
 
-    g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
-                    hue_order=exp_order, ax = axes[3,1], y='duration')
-    g.set_xlabel('')
-    g.set_ylabel('')
-    g.legend_.remove()
+        if axes[2, ci].is_last_col():
+            g.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+        else:
+            g.legend_.remove()
 
-    fig.subplots_adjust(top=0.9)
+    # g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
+    #                 hue_order=exp_order, ax = axes[2,1], y='duration')
+    # g.set_xlabel('')
+    # g.set_ylabel('')
+    # g.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+
+    # Row 3
+    # df1 = late_df.query('time_group == "preCTA"')
+    # df2 = late_df.query('time_group == "postCTA"')
+        g = sns.boxplot(data=ldf, x='exp_group', order=exp_order, hue='time_group',
+                        hue_order=time_order, ax = axes[3,ci], y='duration')
+        g.set_xlabel('')
+        if axes[0, ci].is_first_col():
+            g.set_ylabel('Late\nDuration')
+        else:
+            g.set_ylabel('')
+
+        g.legend_.remove()
+
+    # g = sns.boxplot(data=df2, x='taste', order=taste_order, hue='exp_group',
+    #                 hue_order=exp_order, ax = axes[3,1], y='duration')
+    # g.set_xlabel('')
+    # g.set_ylabel('')
+    # g.legend_.remove()
+
+    fig.subplots_adjust(top=0.9, right=0.85, left=0.15)
     fig.suptitle('HMM State Timing')
     #fig.tight_layout()
 
@@ -1636,6 +1841,10 @@ def plot_hmm_timings(df, save_file=None):
 
 
 def plot_median_gamma_probs(best_hmms, save_file=None):
+    # Drop GFP animals that did not learn CTA and Cre animals that did learn
+   # tmp = best_hmms.query('(exp_group == "Cre" and cta_group == "No CTA") or (cta_group == "CTA" and exp_group == "GFP")')
+   # best_hmms = tmp.copy()
+
     # diff line style for each time_group
     # diff color for each exp_group
     # Not dropping single state trials
@@ -1664,10 +1873,24 @@ def plot_median_gamma_probs(best_hmms, save_file=None):
             es = int(row['early_state'])
             ls = int(row['late_state'])
             gamma_probs = hmm.stat_arrays['gamma_probabilities']
+            state_seqs = hmm.stat_arrays['best_sequences']
             t_idx = np.where((t <= t_end) & (t >= t_start))[0]
             eprobs = gamma_probs[:, es, t_idx]
             lprobs = gamma_probs[:, ls, t_idx]
             t = t[t_idx]
+            state_seqs = state_seqs[:, t_idx]
+
+            # Drop any trials where the state in question is not present in the
+            # decoded sequence, or the duration of the state is less than 50ms
+            e_trials = get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
+            l_trials = get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
+            # Only plot trials where both states are present
+            valid_trials = np.intersect1d(e_trials, l_trials)
+
+            eprobs = eprobs[valid_trials, :]
+            lprobs = lprobs[valid_trials, :]
+
+
             emed = np.median(eprobs, axis=0)
             lmed = np.median(lprobs, axis=0)
             early_traces.append(emed)
@@ -1691,7 +1914,7 @@ def plot_median_gamma_probs(best_hmms, save_file=None):
             ax[1].plot(time, ltrace, color=pcol, linestyle=line_styles[tg])
 
     fig.subplots_adjust(top=0.9, left=0.15)
-    fig.suptitle('Median Gamma Probabilities')
+    fig.suptitle('Median Gamma Probabilities\nSaccharin')
     ax[0].set_ylabel('Early\nState')
     ax[0].legend()
     ax[1].set_ylabel('Late\nState')
@@ -1705,4 +1928,172 @@ def plot_median_gamma_probs(best_hmms, save_file=None):
         return fig
 
 
+def plot_mean_gamma_probs(best_hmms, save_file=None):
+    # diff line style for each time_group
+    # diff color for each exp_group
+    # Not dropping single state trials
+    fig, ax = plt.subplots(nrows=2, figsize=(8,11))
+    time_groups = best_hmms.time_group.unique()
+    exp_groups = best_hmms.exp_group.unique()
+    colors = EXP_COLORS
+    hues = {'preCTA': 0.4, 'postCTA': 1.1}
+    line_styles = ['solid', 'dashed', 'dotted', 'dashdot']
+    line_styles = {k:v for k,v in zip(time_groups, line_styles)}
+    t_start = 0
+    t_end = 1500
+    dt = None
+    for name, group in best_hmms.groupby(['exp_group', 'time_group']):
+        eg = name[0]
+        tg = name[1]
+        early_traces = []
+        late_traces = []
+        time = None
+        for i, row in group.iterrows():
+            if np.isnan(row['early_state']) or np.isnan(row['late_state']):
+                continue
 
+            h5_file = get_hmm_h5(row['rec_dir'])
+            hmm, t, params = phmm.load_hmm_from_hdf5(h5_file, int(row['hmm_id']))
+            es = int(row['early_state'])
+            ls = int(row['late_state'])
+            gamma_probs = hmm.stat_arrays['gamma_probabilities']
+            state_seqs = hmm.stat_arrays['best_sequences']
+            t_idx = np.where((t <= t_end) & (t >= t_start))[0]
+            eprobs = gamma_probs[:, es, t_idx]
+            lprobs = gamma_probs[:, ls, t_idx]
+            t = t[t_idx]
+            state_seqs = state_seqs[:, t_idx]
+
+            # Drop any trials where the state in question is not present in the
+            # decoded sequence, or the duration of the state is less than 50ms
+            e_trials = get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
+            l_trials = get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
+            eprobs = eprobs[e_trials, :]
+            lprobs = lprobs[l_trials, :]
+            emed = np.mean(eprobs, axis=0)
+            lmed = np.mean(lprobs, axis=0)
+            early_traces.append(emed)
+            late_traces.append(lmed)
+            if time is None:
+                time = t
+                dt = params['dt']
+            elif dt != params['dt']:
+                raise ValueError('Non-matching time steps')
+
+        pcol = change_hue(colors[eg], hues[tg])
+        if early_traces != []:
+            early_traces = np.vstack(early_traces)
+            etrace = np.mean(early_traces, axis=0)
+            esd = np.std(early_traces, axis=0)
+            ax[0].plot(time, etrace, color=pcol, linestyle=line_styles[tg],
+                       label='%s %s' % (eg, tg))
+            # ax[0].fill_between(time, etrace - esd, etrace+esd, color=pcol, alpha=0.5)
+
+        if late_traces != []:
+            late_traces = np.vstack(late_traces)
+            ltrace = np.mean(late_traces, axis=0)
+            lsd = np.std(late_traces, axis=0)
+            ax[1].plot(time, ltrace, color=pcol, linestyle=line_styles[tg])
+            # ax[1].fill_between(time, ltrace - lsd, ltrace+lsd, color=pcol, alpha=0.5)
+
+    fig.subplots_adjust(top=0.9, left=0.15)
+    fig.suptitle('Mean Gamma Probabilities\nSaccharin')
+    ax[0].set_ylabel('Early\nState')
+    ax[0].legend()
+    ax[1].set_ylabel('Late\nState')
+    ax[1].set_xlabel('Time (ms)')
+
+    if save_file:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return None
+    else:
+        return fig
+
+
+def grouped_heatmap(data, group_var, sort_var, X=None, ax=None, smoothing_width=None, cbar=True):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(15,10))
+    else:
+        fig = ax.figure
+
+    if X is None:
+        X = np.arange(data.shape[1])
+
+    groups = np.unique(group_var)
+    plot_dat = []
+    ylabels = []
+    mask = []
+    for gi, grp in enumerate(groups):
+        idx = np.where(group_var == grp)[0]
+        tmp = data[idx, :]
+        tmp_sort = sort_var[idx]
+
+        sort_idx = np.argsort(tmp_sort)
+        tmp = tmp[sort_idx,:]
+        plot_dat.append(tmp)
+        mask.append(np.zeros_like(tmp, dtype=bool))
+        yls = np.array(['']*(tmp.shape[0]+1), dtype=object)
+        if gi < len(groups)-1:
+            blank = np.zeros((1, tmp.shape[1]))
+            plot_dat.append(blank)
+            mask.append(np.ones_like(blank, dtype=bool))
+        else:
+            yls = yls[:-1]
+
+        mid = int(tmp.shape[0]/2)
+        yls[mid] = grp
+        ylabels.append(yls)
+
+    plot_dat = np.vstack(plot_dat)
+    if smoothing_width is not None:
+        # Trying smoothing for visualization
+        plot_dat = np.array([gaussian_filter1d(x, smoothing_width) for x in plot_dat])
+
+    mask = np.vstack(mask)
+    ylabels = np.concatenate(ylabels)
+    plot_df = pd.DataFrame(plot_dat, columns=X)
+    g = sns.heatmap(plot_df, mask=mask, rasterized=True,
+                    ax=ax, robust=True,
+                    yticklabels=ylabels, cbar=cbar)
+    return fig, ax
+
+
+def get_valid_trials(state_seqs, state, min_pts=1, time=None):
+    '''returns the indices of all trials where the given state is present and
+    has more than min_pts consecutive points in that state. If time is given,
+    this will only return trials in which the state is present after t=0
+    '''
+    if time is not None:
+        tidx = np.where(time > 0)[0]
+        state_seqs = state_seqs.copy()[:, tidx]
+
+    out = []
+    for i, row in enumerate(state_seqs):
+        if state not in row:
+            continue
+
+        summary = summarize_sequence(row)
+        idx = np.where(summary[:,0] == state)[0]
+        summary = summary[idx, :]
+        if not any(summary[:,-1] >= min_pts):
+            continue
+
+        out.append(i)
+
+    return np.array(out)
+
+
+def summarize_sequence(path):
+    '''takes a 1-D sequences of categorical info and returns a matrix with
+    columns: state, start_idx, end_idx, duration in samples
+    '''
+    tmp_path = path.copy()
+    out = []
+    a = np.where(np.diff(path) != 0)[0]
+    starts = np.insert(a+1,0,0)
+    ends = np.insert(a, len(a), len(path)-1)
+    for st, en in zip(starts, ends):
+        out.append((path[st], st, en, en-st+1))
+
+    return np.array(out)

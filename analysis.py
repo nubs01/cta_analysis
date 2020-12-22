@@ -21,9 +21,18 @@ from blechpy.utils import write_tools as wt
 import pylab as pyplt
 from datetime import datetime
 from tqdm import tqdm
+from joblib import parallel_backend
 
 PAL_MAP = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
            'Citric Acid': 2, 'NaCl': 3}
+
+
+ELECTRODE_AREAS = {'RN5': 'right', 'RN10': 'both', 'RN11': 'right',
+                   'RN15': 'both', 'RN16': 'both', 'RN17': 'both',
+                   'RN18': 'both', 'RN19': 'right', 'RN20': 'right',
+                   'RN21': 'right', 'RN22': 'both', 'RN23': 'right',
+                   'RN24': 'both', 'RN25': 'both'}
+
 
 ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 750, 'alpha': 0.05},
                    'pal_responsive': {'win_size': 250, 'step_size': 25,
@@ -40,12 +49,24 @@ ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 750, 'alpha': 0.05},
 
 ELF_DIR = '/data/Katz_Data/Stk11_Project/'
 MONO_DIR = '/media/roshan/Gizmo/Katz_Data/Stk11_Project/'
-if os.path.isdir(MONO_DIR):
-    LOCAL_MACHINE = 'mononoke'
-elif os.path.isdir(ELF_DIR):
-    LOCAL_MACHINE = 'StealthElf'
-else:
-    LOCAL_MACHINE = ''
+LOCAL_MACHINE = os.uname()[1]
+if LOCAL_MACHINE == 'Mononoke':
+    DATA_DIR = MONO_DIR
+elif LOCAL_MACHINE == 'StealthElf':
+    DATA_DIR = ELF_DIR
+
+
+def get_file_dirs(animID):
+    anim_dir = os.path.join(DATA_DIR, animID)
+    fd = [os.path.join(anim_dir, x) for x in os.listdir(anim_dir)]
+    file_dirs = [x for x in fd if os.path.isdir(x)]
+    out = []
+    for f in file_dirs:
+        fl = os.listdir(f)
+        if any([x.endswith('.dat') for x in fl]):
+            out.append(f)
+
+    return out, anim_dir
 
 
 def update_params(new, old):
@@ -126,6 +147,14 @@ class ProjectAnalysis(object):
 
         if 'cta_group' not in held_df.columns:
             all_units['cta_group'] = all_units.exp_name.map(cta_map)
+            self.write_unit_info(held_df=held_df)
+
+        if 'area' not in held_df.columns:
+            for i, row in held_df.iterrows():
+                r1 = row['rec1']
+                u1 = row['unit1']
+                held_df.loc[i, 'area'] = all_units.query('rec_dir == @r1 and unit_name == @u1').iloc[0]['area']
+
             self.write_unit_info(held_df=held_df)
 
         return all_units, held_df
@@ -514,8 +543,15 @@ class ProjectAnalysis(object):
         plt.plot_pca_metric(metric_data, os.path.join(save_dir, 'relative_PCA_distances-CTA.svg'))
         plt.plot_mds_metric(metric_data, os.path.join(mds_dir, 'relative_MDS_distances-CTA.svg'))
 
+    def fix_palatability(self):
+        agg.fix_palatability(self.project, pal_map=agg.PAL_MAP)
+
+    def fix_areas(self):
+        agg.set_electrode_areas(self.project, el_in_gc=ELECTRODES_IN_GC)
 
     def run(self, overwrite=False):
+        self.fix_areas()
+        self.fix_palatability()
         self.detect_held_units(overwrite=overwrite, raw_waves=True)
         self.analyze_response_changes(overwrite=overwrite)
         self.make_aggregate_held_unit_plots()
@@ -843,40 +879,6 @@ def apply_tastes(rec_group):
     return pd.DataFrame(out)
 
 
-def fix_area(proj):
-    exp_areas = {'RN5': 'right', 'RN10': 'both', 'RN11': 'right',
-                 'RN15': 'both', 'RN16': 'both', 'RN17': 'both',
-                 'RN18': 'both', 'RN19': 'right', 'RN20': 'right',
-                 'RN21': 'right', 'RN22': 'both', 'RN23': 'right',
-                 'RN24': 'both', 'RN25': 'both'}
-    exp_info = proj._exp_info
-    for i, row in exp_info.iterrows():
-        exp = load_experiment(row['exp_dir'])
-        name = row['exp_name']
-        ingc = exp_areas[name]
-        if ingc is 'right':
-            el = np.arange(8, 24)
-        elif ingc is 'left':
-            el = np.concatenate([np.arange(0,8), np.arange(24, 32)])
-        elif ingc is 'none':
-            el = np.arange(0,32)
-        else:
-            el = None
-
-        for rec in exp.recording_dirs:
-            dat = load_dataset(rec)
-            print('Fixing %s...' % dat.data_name)
-            em = dat.electrode_mapping
-            em['area'] = 'GC'
-            if el is not None:
-                em.loc[em['Channel'].isin(el), 'area'] = 'STR'
-
-            h5io.write_electrode_map_to_h5(dat.h5_file, em)
-            dat.save()
-
-    return
-
-
 class HmmAnalysis(object):
     def __init__(self, proj):
         self.root_dir = os.path.join(proj.root_dir, proj.data_name + '_analysis')
@@ -952,12 +954,14 @@ class HmmAnalysis(object):
         else:
             ho = None
             print('aggregating hmm data...')
-            pbar = tqdm(total=self.project._exp_info.shape[0]*4)
+            #pbar = tqdm(total=self.project._exp_info.shape[0]*4)
             for i, row in self.project._exp_info.iterrows():
                 exp = load_experiment(row['exp_dir'])
                 for rec_dir in exp.recording_dirs:
+                    print('processing %s' % os.path.basename(rec_dir))
                     h5_file = hmma.get_hmm_h5(rec_dir)
                     if h5_file is None:
+                        #pbar.update(1)
                         continue
 
                     handler = phmm.HmmHandler(rec_dir)
@@ -968,16 +972,18 @@ class HmmAnalysis(object):
                     else:
                         ho = ho.append(df, ignore_index=True)
 
-                    pbar.update(1)
+                    #pbar.update(1)
 
-            pbar.close()
+            #pbar.close()
             feather.write_dataframe(ho, self.files['hmm_overview'])
 
         if not 'exp_name' in ho.columns:
+            print('parsing rec dir...')
             ho[['exp_name','rec_group']] = ho['rec_dir'].apply(parse_rec)
             feather.write_dataframe(ho, self.files['hmm_overview'])
 
         if not 'single_state_trials' in ho.columns:
+            print('counting single state trials...')
             ho['single_state_trials'] = ho.apply(hmma.check_single_state_trials, axis=1)
             feather.write_dataframe(ho, self.files['hmm_overview'])
 
@@ -1027,6 +1033,12 @@ class HmmAnalysis(object):
             if 'late_state' not in sorted_hmms.columns:
                 sorted_hmms['late_state'] = np.nan
 
+            if 'sorting' not in sorted_hmms.columns:
+                sorted_hmms['sorting'] = 'rejected'
+
+            if 'sort_method' not in sorted_hmms.columns:
+                sorted_hmms['sort_method'] = 'auto'
+
             if 'palatability' not in sorted_hmms.columns:
                 pal_map = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
                            'Citric Acid': 2, 'NaCl': 3}
@@ -1037,14 +1049,67 @@ class HmmAnalysis(object):
         else:
             return None
 
-    def get_best_hmms(self, overwrite=False):
+    def input_manual_sorting(self, fn, wipe_manual=False):
+        '''assumes tab-seperated variables in text file with columns: exp_name,
+        rec_group, hmm_id, taste, early_state, late_state, sorting_notes
+        '''
+        sorted_df = self.get_sorted_hmms()
+        if 'sorting_notes' not in sorted_df.columns:
+            sorted_df['sorting_notes'] = ''
+
+        if wipe_manual:
+            sorted_df['sorting'] = 'rejected'
+            sorted_df['sort_method'] = 'auto'
+            sorted_df['sorting_notes'] = ''
+        else:
+            idx = (sorted_df['sort_method'] == 'auto')
+            sorted_df.loc[idx, 'sorting'] = 'rejected'
+            sorted_df.loc[idx, 'sorting_notes'] = ''
+
+        sorted_df['hmm_id'] = sorted_df['hmm_id'].astype('int')
+        with open(fn, 'r') as f:
+            lines = f.readlines()
+
+        columns = ['exp_name', 'rec_group', 'hmm_id', 'taste', 'early_state',
+                   'late_state', 'sorting_notes']
+        for l in lines:
+            if l == '\n' or l == '':
+                continue
+
+            vals = l.replace('\n','').split('\t')
+            exp_name = vals[0]
+            rec_group = vals[1]
+            hmm_id = int(vals[2])
+            early_state = int(vals[4])
+            late_state = int(vals[5])
+            if len(vals) == 7:
+                notes = vals[6]
+            else:
+                notes = ''
+
+            tmp_idx = ((sorted_df['exp_name'] == exp_name) &
+                       (sorted_df['rec_group'] == rec_group) &
+                       (sorted_df['hmm_id'] == hmm_id))
+            sorted_df.loc[tmp_idx, 'sorting'] = 'best'
+            sorted_df.loc[tmp_idx, 'sort_method'] = 'manual'
+            sorted_df.loc[tmp_idx, 'early_state'] = early_state
+            sorted_df.loc[tmp_idx, 'late_state'] = late_state
+            sorted_df.loc[tmp_idx, 'sorting_notes'] = notes
+
+        self.write_sorted_hmms(sorted_df)
+        return sorted_df
+
+    def get_best_hmms(self, overwrite=False, sorting='best', save_dir=None):
         best_file = self.files['best_hmms']
+        if save_dir is not None:
+            best_file = os.path.join(save_dir, os.path.basename(best_file))
+
         if os.path.isfile(best_file) and not overwrite:
             return feather.read_dataframe(best_file)
 
         df = self.get_sorted_hmms()
         all_units, _ = ProjectAnalysis(self.project).get_unit_info()
-        out_df = hmma.make_best_hmm_list(all_units, df)
+        out_df = hmma.make_best_hmm_list(all_units, df, sorting=sorting)
         feather.write_dataframe(out_df, best_file)
         return out_df
 
@@ -1118,20 +1183,27 @@ class HmmAnalysis(object):
             if not os.path.isdir(v):
                 os.mkdir(v)
 
+        pbar = tqdm(total=sorted_hmms.shape[0])
         for i, row in sorted_hmms.iterrows():
             fn = '%s_%s_HMM%i-%s.svg' % (row['exp_name'], row['rec_group'],
                                          row['hmm_id'], row['taste'])
             if row['sorting'] not in plot_dirs.keys():
+                pbar.update()
                 continue
 
             if skip_rejected and row['sorting'] == 'rejected':
+                pbar.update()
                 continue
 
             fn = os.path.join(plot_dirs[row['sorting']], fn)
             if os.path.isfile(fn) and not overwrite:
+                pbar.update()
                 continue
 
             plt.plot_hmm(row['rec_dir'], row['hmm_id'], save_file=fn)
+            pbar.update()
+
+        pbar.close()
 
     def plot_hmms_deprecated(self, overwrite=False):
         hmm_df = self.get_hmm_overview()
@@ -1169,19 +1241,32 @@ class HmmAnalysis(object):
 
                 plt.plot_hmm(rec_dir, hmm_id, save_file=fn)
 
-    def plot_all_hmms(self):
+    def plot_all_hmms(self, overwrite=False):
         sorted_df = self.get_sorted_hmms()
         plot_dir = os.path.join(self.save_dir, 'Fitted_HMMs')
-        for name, group in sorted_df.groupby(['exp_name', 'rec_group', 'taste']):
-            print('Plotting HMMs for %s' % ('_'.join(name)))
+        grpby = sorted_df.groupby(['exp_name', 'rec_group', 'taste'])
+        counter = 0
+        total = sorted_df.shape[0]
+        #pbar = tqdm(total=sorted_df.shape[0])
+        for name, group in grpby:
             anim_dir = os.path.join(plot_dir, '_'.join(name))
             if not os.path.isdir(anim_dir):
                 os.makedirs(anim_dir)
 
             for i, row in group.iterrows():
+                counter += 1
+                print('Plotting %i of %i' % (counter, total))
                 fn = '_'.join(name) + '_HMM#%s.svg' % row['hmm_id']
                 fn = os.path.join(anim_dir, fn)
+                if os.path.isfile(fn) and not overwrite:
+                    #pbar.update()
+                    continue
+
+                #print('Plotting HMMs for %s' % ('_'.join(name)))
                 plt.plot_hmm(row['rec_dir'], row['hmm_id'], save_file=fn)
+                #pbar.update()
+
+        #pbar.close()
 
     def deprecated_analyze_state_durations(self, overwrite=False):
         hmm_df = self.get_sorted_hmms()
@@ -1218,11 +1303,17 @@ class HmmAnalysis(object):
             dat_file = os.path.join(save_dir, 'state_breakdown.feather')
             feather.write_dataframe(state_breakdown, dat_file)
 
-    def analyze_hmms(self, overwrite=False):
-        best_hmms = self.get_best_hmms()
+    def analyze_hmms(self, overwrite=False, save_dir=None):
         all_units, _  = ProjectAnalysis(self.project).get_unit_info()
         coding_file = self.files['hmm_coding']
         timing_file = self.files['hmm_timings']
+        if save_dir is not None:
+            cfn = os.path.basename(coding_file)
+            tfn = os.path.basename(timing_file)
+            coding_file = os.path.join(save_dir, cfn)
+            timing_file = os.path.join(save_dir, tfn)
+
+        best_hmms = self.get_best_hmms(save_dir=save_dir)
         timing_stats = timing_file.replace('feather', 'txt')
         if os.path.isfile(coding_file) and not overwrite:
             coding = feather.read_dataframe(coding_file)
@@ -1243,23 +1334,210 @@ class HmmAnalysis(object):
 
         return coding, timings
 
-    def plot_hmm_coding_and_timing(self):
-        best_hmms = self.get_best_hmms()
-        coding, timings = analyze_hmms()
-        coding_fn = os.path.join(self.save_dir, 'HMM_coding.svg')
-        timing_fn = os.path.join(self.save_dir, 'HMM_timing.svg')
-        prob_fn = os.path.join(self.save_dir, 'HMM_Median_Gamma_Probs.svg')
+    def plot_hmm_coding_and_timing(self, save_dir=None):
+        if save_dir is None:
+            save_dir = self.save_dir
+
+        best_hmms = self.get_best_hmms(save_dir=save_dir)
+        coding, timings = self.analyze_hmms(save_dir=save_dir)
+        coding_fn = os.path.join(save_dir, 'HMM_coding.png')
+        timing_fn = os.path.join(save_dir, 'HMM_timing.png')
+        prob_fn = os.path.join(save_dir, 'HMM_Median_Gamma_Probs.png')
+        mean_prob_fn = os.path.join(save_dir, 'HMM_Mean_Gamma_Probs.png')
+        seq_fn = os.path.join(save_dir, 'All_Sequences.png')
+        sacc_seq_fn = os.path.join(save_dir, 'Saccharin_Sequences.png')
+        seq_cta_fn = os.path.join(save_dir, 'All_Sequences-CTA.png')
+        sacc_seq_cta_fn = os.path.join(save_dir, 'Saccharin_Sequences-CTA.png')
         plt.plot_hmm_coding_accuracy(coding, coding_fn)
         plt.plot_hmm_timings(timings, timing_fn)
         plt.plot_median_gamma_probs(best_hmms.query('taste == "Saccharin"'), prob_fn)
+        plt.plot_mean_gamma_probs(best_hmms.query('taste == "Saccharin"'), mean_prob_fn)
 
-    def process_fitted_hmms(self):
-        ho = self.get_hmm_overview(overwrite=True)
-        sorted_df = self.sort_hmms(overwrite=True, plot_rejected=False)
-        self.plot_sorted_hmms(overwrite=False)
-        self.plot_all_hmms()
-        best_hmms = self.get_best_hmms(overwrite=True)
-        return sorted_df, best_hmms
+        plt.plot_hmm_sequence_heatmap(best_hmms, 'exp_group', seq_fn)
+        plt.plot_hmm_sequence_heatmap(best_hmms.query('taste=="Saccharin"'), 'exp_group', sacc_seq_fn)
+        plt.plot_hmm_sequence_heatmap(best_hmms, 'cta_group', seq_cta_fn)
+        plt.plot_hmm_sequence_heatmap(best_hmms.query('taste=="Saccharin"'), 'cta_group', sacc_seq_cta_fn)
+        unit_fn = os.path.join(save_dir, 'Unit_Info.txt')
+        with open(unit_fn, 'w') as f:
+            all_units, held_units = ProjectAnalysis(self.project).get_unit_info()
+            all_units = all_units.query('single_unit == True and area == "GC"')
+            held_units = held_units.query('area == "GC"')
+            out = ['All Unit Counts']
+            out.append('-'*80)
+            a_count = all_units.groupby(['exp_group', 'exp_name',
+                                         'rec_group'])['unit_num'].count()
+            held_units = held_units.dropna(subset=['held_unit_name'])
+            h_count = held_units.groupby(['exp_group', 'exp_name', 'held_over'])['held'].count()
+            out.append(repr(a_count))
+            out.append('='*80)
+            out.append('')
+            out.append('Held Unit Counts')
+            out.append('-'*80)
+            out.append(repr(h_count))
+            print('\n'.join(out), file=f)
+
+    def process_fitted_hmms(self, overwrite=False):
+        ho = self.get_hmm_overview(overwrite=overwrite)
+        self.sort_hmms_by_params(overwrite=True)
+        self.mark_early_and_late_states()
+        sorted_df = self.get_sorted_hmms()
+        #sorted_df = self.sort_hmms(overwrite=True)
+        param_sets = sorted_df.sorting.unique()
+        for set_name in param_sets:
+            if set_name == 'rejected':
+                continue
+
+            save_dir = os.path.join(self.save_dir, set_name)
+            if os.path.isdir(save_dir):
+                os.removedirs(save_dir)
+
+            os.mkdir(save_dir)
+            best_hmms = self.get_best_hmms(overwrite=True, save_dir=save_dir, sorting=set_name)
+            self.analyze_hmms(overwrite=True, save_dir=save_dir)
+            self.plot_hmm_coding_and_timing(save_dir=save_dir)
+        #self.plot_sorted_hmms(overwrite=False)
+        #self.plot_all_hmms()
+        return sorted_df#, best_hmms
+
+    def plot_hmms_for_comp(self):
+        sorted_df = self.get_sorted_hmms()
+        plot_dir = os.path.join(self.save_dir, 'HMMs_for_Don')
+        if not os.path.isdir(plot_dir):
+            os.makedirs(plot_dir)
+
+        # For each animal, rec_group, taste plot hmms labelled by prominent params
+        # Important parameters: n_states, unit_type
+        # If any best in rec_group has pyramidal unit type, then also plot pyramidal solutions
+        req_params = {'area': 'GC', 'dt': 0.001, 'hmm_class': 'PoissonHMM'}
+        param_keys = ['dt', 'n_states', 'n_trials', 'time_start', 'time_end',
+                      'unit_type', 'notes']
+        df = sorted_df[sorted_df.notes.str.contains('sequential')]
+        qstr = ' and '.join(['{} == "{}"'.format(k,v) for k,v in req_params.items()])
+        df = df.query(qstr)
+        for (exp_name, rec_group, taste), group in df.groupby(['exp_name',
+                                                               'rec_group',
+                                                               'taste']):
+            p_grp = group.query('unit_type == "pyramidal"')
+            s_grp = group.query('unit_type == "single"')
+
+            if len(s_grp) > 0:
+                all_cells = s_grp['n_cells'].unique()[0]
+                tmp_grp = group.query('unit_type == "single"')
+                tmp_grp = tmp_grp[tmp_grp.notes.str.contains('fixed 2')]
+            else:
+                print('Skipping %s %s %s' % (exp_name, rec_group, taste))
+                continue
+
+            if len(p_grp) > 0:
+                pyr_cells = p_grp['n_cells'].unique()[0]
+            else:
+                pyr_cells = all_cells
+
+            if pyr_cells != all_cells:
+                print('Plotting pyramidal for %s %s %s' % (exp_name, rec_group, taste))
+                pyr_grp = group.query('unit_type == "pyramidal"')
+                if len(pyr_grp) > 0 and len(pyr_grp) < 3:
+                    tmp_grp = tmp_grp.copy()
+                    tmp_grp = tmp_grp.append(pyr_grp.copy())
+                elif len(pyr_grp) > 3:
+                    g2 = pyr_grp.query('n_states == 2')['log_likelihood'].idxmax()
+                    g3 = pyr_grp.query('n_states == 3')['log_likelihood'].idxmax()
+                    pyr_grp = pyr_grp.loc[[g2,g3]]
+                    tmp_grp = tmp_grp.copy()
+                    tmp_grp = tmp_grp.append(pyr_grp.copy())
+                else:
+                    print('No Pyramidal found')
+
+            for i, row in tmp_grp.iterrows():
+                fd = os.path.join(plot_dir, '%s_%s_%s' % (exp_name, rec_group, taste))
+                fn = '%i-states_%s-cells.png' % (row['n_states'], row['unit_type'])
+                if not os.path.isdir(fd):
+                    os.makedirs(fd)
+
+                fn = os.path.join(fd, fn)
+                plt.plot_hmm(row['rec_dir'], row['hmm_id'], save_file=fn)
+
+    def reset_hmm_sorting(self):
+        sorted_df = self.get_sorted_hmms()
+        sorted_df['sorting'] = 'rejected'
+        sorted_df['sort_method'] = 'auto'
+        self.write_sorted_hmms(sorted_df)
+
+    def mark_early_and_late_states(self):
+        ho = self.get_sorted_hmms()
+        def apply_states(row):
+            h5 = hmma.get_hmm_h5(row['rec_dir'])
+            hmm, _, _ = phmm.load_hmm_from_hdf5(h5, row['hmm_id'])
+            tmp = hmma.choose_early_late_states(hmm)
+            return pd.Series({'early_state': tmp[0], 'late_state': tmp[1]})
+
+        ho[['early_state', 'late_state']] = ho.apply(apply_states, axis=1)
+        self.write_sorted_hmms(ho)
+
+    def sort_hmms_by_params(self, overwrite=False):
+        sorted_df = self.get_sorted_hmms()
+        if sorted_df is None or overwrite:
+            sorted_df = self.get_hmm_overview()
+
+        sorted_df['sorting'] = 'rejected'
+        sorted_df['sort_method'] = 'auto'
+        met_params = sorted_df.query('notes == "sequential - final"')
+        param_cols = ['n_states', 'time_start', 'time_end', 'area',
+                      'unit_type', 'dt', 'n_trials']
+        param_num = 0
+        for name, group in met_params.groupby(param_cols):
+            param_label = ('%i states, %i to %i ms, %s %s units, '
+                           'dt = %g, n_trials = %i' % name)
+            summary = ['-'*80,
+                       'parameter #: %i' % param_num,
+                       '# of states: %i' % name[0],
+                       'time: %i to %i' % (name[1], name[2]),
+                       'area: %s' % name[3],
+                       'unit type: %s' % name[4],
+                       'dt: %g' % name[5],
+                       'n_trials: %i' % name[6],
+                       '# of HMMs: %i' % len(group),
+                       '-'*80]
+            print('\n'.join(summary))
+            if len(group) < 30:
+                param_num += 1
+                continue
+
+            idx = np.array((group.index))
+            sorted_df.loc[idx, 'sorting'] = 'params #%i' % param_num
+            sorted_df.loc[idx, 'sorting_notes'] = param_label
+            param_num += 1
+
+        self.write_sorted_hmms(sorted_df)
+
+
+def organize_hmms(sorted_df, plot_dir):
+    req_params = {'dt': 0.001, 'unit_type': 'single', 'time_end': 2000}
+    qstr = ' and '.join(['{} == "{}"'.format(k,v) for k,v in req_params.items()])
+    sorted_df = sorted_df.query(qstr)
+    sorted_df = sorted_df[(sorted_df.notes.str.contains('sequential - final') |
+                           sorted_df.notes.str.contains('sequential - fixed 2'))]
+    for n_states in np.arange(2,4):
+        txt_fn = os.path.join(plot_dir, '%i-state_hmm_table.txt' % n_states)
+        save_dir = os.path.join(plot_dir, '%i-state_HMMs' % n_states)
+        if not os.path.isdir(save_dir):
+            os.makedirs(save_dir)
+
+        df = sorted_df.query('n_states == @n_states')
+        # write exp_name, rec_group, hmm_id, taste into TSV file so that I can
+        # go through put early and late states in. Split rec_groups by empty
+        # space
+        with open(txt_fn, 'w') as f:
+            for i,row in df.iterrows():
+                out_str = '\t'.join([row['exp_name'], row['rec_group'],
+                                     str(row['hmm_id']), row['taste'],
+                                     str(n_states-2), str(n_states-1)])
+                print(out_str, file=f)
+
+                fn = '%s_%s_%s_HMM%i.png' % (row['exp_name'], row['rec_group'],
+                                             row['taste'], row['hmm_id'])
+                fn = os.path.join(save_dir, fn)
+                plt.plot_hmm(row['rec_dir'], row['hmm_id'], save_file=fn)
 
 
 def get_saccharin_consumption(anim_dir):
@@ -1399,16 +1677,16 @@ def compare_taste_responses(rec1, unit1, rec2, unit2, params, method='bootstrap'
         pvals = pvals*nt
 
         # Compute mean difference using psth parameters
-        pt1, psth1, base1 = agg.get_psth(rec1, unit1, ch1, params)
-        pt2, psth2, base2 = agg.get_psth(rec2, unit2, ch2, params)
+        pt1, psth1, base1 = agg.get_psth(rec1, unit1, ch1, params, remove_baseline=True)
+        pt2, psth2, base2 = agg.get_psth(rec2, unit2, ch2, params, remove_baseline=True)
         # Original
         # diff, sem_diff = sas.get_mean_difference(psth1, psth2)
         # Mag diff plot looked odd, trying using same binning as comparison
         # diff, sem_diff = sas.get_mean_difference(fr1, fr2)
         # ^This looked worse, going back
         # Now computing and plotting the difference in zscored firing rates
-        zpsth1 = (psth1-base1[0])/base1[1]
-        zpsth2 = (psth2-base2[0])/base2[1]
+        # zpsth1 = (psth1-base1[0])/base1[1]
+        # zpsth2 = (psth2-base2[0])/base2[1]
         diff, sem_diff = sas.get_mean_difference(psth1, psth2)
 
         #Store stuff
@@ -1427,7 +1705,7 @@ def parse_rec(rd):
 
     parsed = os.path.basename(rd).split('_')
     exp_name = parsed[0]
-    rec_group = parsed[-1]
+    rec_group = parsed[-3]
     if rec_group == 'SaccTest':
         rec_group = 'ctaTest'
 
@@ -1554,6 +1832,8 @@ def refit_hmms(sorted_df, base_params, all_units,log_file=None, rec_params={}):
 def get_local_path(path):
     if ELF_DIR in path and not os.path.isdir(path) and os.path.isdir(MONO_DIR):
         out = path.replace(ELF_DIR, MONO_DIR)
+    elif MONO_DIR in path and not os.path.isdir(path) and os.path.isdir(ELF_DIR):
+        out = path.replace(MONO_DIR, ELF_DIR)
     else:
         out = path
 
@@ -1687,6 +1967,161 @@ def analyze_saccharin_confusion_deprecated(held_df, best_hmms):
         out.append(row)
 
     return pd.DataFrame(out)
+
+
+def refit_anim(needed_hmms, anim, rec_group=None, custom_params=None):
+    df = needed_hmms.query('exp_name == @anim')
+    base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
+                   'max_iter': 200, 'n_repeats': 50, 'time_start': -250,
+                   'time_end': 2000, 'n_states': 3, 'area': 'GC',
+                   'hmm_class': 'PoissonHMM', 'threshold':1e-6,
+                   'notes': 'sequential - final'}
+    if custom_params is not None:
+        for k,v in custom_params.items():
+            base_params[k] = v
+
+    for rec_dir, group in df.groupby(['rec_dir']):
+        if rec_group is not None and rec_group not in rec_dir:
+            continue
+
+        rd = get_local_path(rec_dir)
+        handler = phmm.HmmHandler(rd)
+        for i, row in group.iterrows():
+            p = base_params.copy()
+            p['channel'] = row['channel']
+            p['taste'] = row['taste']
+            handler.add_params(p)
+            p2 = p.copy()
+            p2['n_states'] = 2
+            p2['time_start'] = 0
+            handler.add_params(p2)
+            p3 = p.copy()
+            p3['n_states'] = 2
+            p3['time_start'] = 200
+            handler.add_params(p3)
+            p4 = p.copy()
+            p4['time_start'] = -1000
+            p4['n_states'] = 4
+            handler.add_params(p4)
+
+        print('Fitting %s' % os.path.basename(rec_dir))
+        handler.run(constraint_func=hmma.sequential_constrained)
+
+
+def fit_anim_hmms(anim):
+    if anim == 'RN5':
+        anim = 'RN5b'
+
+    file_dirs, anim_dir = get_file_dirs(anim)
+    base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
+                   'max_iter': 200, 'n_repeats': 50, 'time_start': -250,
+                   'time_end': 2000, 'n_states': 3, 'area': 'GC',
+                   'hmm_class': 'PoissonHMM', 'threshold':1e-6,
+                   'notes': 'sequential - final'}
+
+    for rec_dir in file_dirs:
+        handler = phmm.HmmHandler(rec_dir)
+        p = base_params.copy()
+        handler.add_params(p)
+        p2 = p.copy()
+        p2['n_states'] = 2
+        p2['time_start'] = 0
+        handler.add_params(p2)
+        p3 = p.copy()
+        p3['n_states'] = 2
+        p3['time_start'] = 200
+        handler.add_params(p3)
+        #p4 = p.copy()
+        #p4['time_start'] = -1000
+        #p4['n_states'] = 4
+        #handler.add_params(p4)
+        if 'ctaTrain' in rec_dir:
+            p5 = p.copy()
+            _ = p5.pop('n_trials')
+            handler.add_params(p5)
+
+        print('Fitting %s' % os.path.basename(rec_dir))
+        if LOCAL_MACHINE == 'StealthElf':
+            handler.run(constraint_func=hmma.sequential_constrained)
+        elif LOCAL_MACHINE == 'Mononoke':
+            with parallel_backend('multiprocessing'):
+                handler.run(constraint_func=hmma.sequential_constrained)
+
+
+def final_refits(needed_hmms):
+    #refit_anim(needed_hmms, 'RN24', rec_group='ctaTrain')
+    #refit_anim(needed_hmms, 'RN24', rec_group='postCTA', custom_params={'time_end': 1750})
+    #refit_anim(needed_hmms, 'RN24', rec_group='preCTA')
+
+    #refit_anim(needed_hmms, 'RN25', rec_group='postCTA')
+    #refit_anim(needed_hmms, 'RN25', rec_group='preCTA')
+
+    #refit_anim(needed_hmms, 'RN26', rec_group='postCTA')
+    #refit_anim(needed_hmms, 'RN26', rec_group='ctaTrain')
+    #refit_anim(needed_hmms, 'RN26', rec_group='preCTA', custom_params={'time_end': 1750})
+    #refit_anim(needed_hmms, 'RN21', rec_group='ctaTest')
+    #refit_anim(needed_hmms, 'RN24', rec_group='ctaTest')
+    #refit_anim(needed_hmms, 'RN26', rec_group='ctaTest')
+    #refit_anim(needed_hmms, 'RN5', rec_group='preCTA')
+    #refit_anim(needed_hmms, 'RN5', rec_group='postCTA')
+
+    #TODO: RN24 preCTA Quinine A constrained 2-state, single unit
+
+    refit_anim(needed_hmms, 'RN25', rec_group='ctaTest')
+    refit_anim(needed_hmms, 'RN25', rec_group='ctaTrain')
+    refit_anim(needed_hmms, 'RN5', rec_group='ctaTest')
+    refit_anim(needed_hmms, 'RN5', rec_group='ctaTrain')
+    refit_anim(needed_hmms, 'RN27')
+    refit_anim(needed_hmms, 'RN17')
+    refit_anim(needed_hmms, 'RN18')
+    refit_anim(needed_hmms, 'RN21')
+    refit_anim(needed_hmms, 'RN24')
+
+
+def fit_full_hmms(needed_hmms, h5_file):
+    base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
+                   'max_iter': 500, 'n_repeats': 25, 'time_start': -250,
+                   'time_end': 2000, 'n_states': 2, 'area': 'GC',
+                   'hmm_class': 'ConstrainedHMM', 'threshold':1e-5}
+
+
+    handler = hmma.CustomHandler(h5_file)
+    for (exp_name, rec_group, rec_dir), group in needed_hmms.groupby(['exp_name', 'rec_group', 'rec_dir']):
+        if rec_group not in ['preCTA', 'postCTA']:
+            continue
+
+        params = base_params.copy()
+        params['taste'] = group.taste.to_list()
+        params['channel'] = group.channel.to_list()
+        params['rec_dir'] = rec_dir
+        params['notes'] = '%s_%s' % (exp_name, rec_group)
+        handler.add_params(params)
+
+    handler.run()
+
+
+def get_hmm_firing_rate_PCs(best_hmms):
+    best = best_hmms.dropna(subset=['hmm_id'])
+    out = []
+    for (en, rg, rd), group in best.groupby(['exp_name', 'rec_group', 'rec_dir']):
+        for i, row in group.iterrows():
+            hid = row['hmm_id']
+            taste = row['taste']
+            h5_file = hmma.get_hmm_h5(rd)
+            hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hid)
+            emission = hmm.emissions
+            for state, emr in emission.T:
+                rates, trials = hmma.get_state_firing_rates(rd, hid, state)
+                row_id = [(en, rg, hid, taste, state, 'model')]
+                rates = np.vstack(emr, rates)
+                tid = [(en, rg, hid, taste, state, t) for t in trials]
+                row_id.extend(tid)
+                row_id = np.vstack(row_id)
+
+        # TODO: Finish this
+
+
+
 
 
 

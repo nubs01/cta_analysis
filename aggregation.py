@@ -16,6 +16,11 @@ from blechpy.utils import print_tools as pt
 PAL_MAP = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
            'Citric Acid': 2, 'NaCl': 3}
 
+ELECTRODES_IN_GC = {'RN5': 'right', 'RN10': 'both', 'RN11': 'right',
+                    'RN15': 'both', 'RN16': 'both', 'RN17': 'both',
+                    'RN18': 'both', 'RN19': 'right', 'RN20': 'right',
+                    'RN21': 'right', 'RN22': 'both', 'RN23': 'right',
+                    'RN24': 'both', 'RN25': 'both'}
 
 def get_all_units(proj):
     # Columns:
@@ -310,7 +315,7 @@ def get_psth(rec, unit, ch, params, remove_baseline=False):
                                                t_start=psth_start,
                                                t_end=psth_end,
                                                baseline_win=baseline_win,
-                                               remove_baseline=False)
+                                               remove_baseline=remove_baseline)
 
     return pt, psth, baseline
 
@@ -330,4 +335,37 @@ def fix_palatability(proj, pal_map=None):
             dat.dig_in_mapping['palatability_rank'] = dat.dig_in_mapping.name.map(pal_map)
             h5io.write_digital_map_to_h5(dat.h5_file, dat.dig_in_mapping, 'in')
             dat.save()
+
+
+def set_electrode_areas(proj, el_in_gc=ELECTRODES_IN_GC):
+    exp_info = proj._exp_info
+    for i, row in exp_info.iterrows():
+        exp = blechpy.load_experiment(row['exp_dir'])
+        name = row['exp_name']
+        if name not in el_in_gc.keys():
+            continue
+
+        ingc = el_in_gc[name]
+        if ingc is 'right':
+            el = np.arange(8, 24)
+        elif ingc is 'left':
+            el = np.concatenate([np.arange(0,8), np.arange(24, 32)])
+        elif ingc is 'none':
+            el = np.arange(0,32)
+        else:
+            el = None
+
+        for rec in exp.recording_dirs:
+            dat = blechpy.load_dataset(rec)
+            print('Fixing %s...' % dat.data_name)
+            em = dat.electrode_mapping
+            em['area'] = 'GC'
+            if el is not None:
+                em.loc[em['Channel'].isin(el), 'area'] = 'STR'
+
+            h5io.write_electrode_map_to_h5(dat.h5_file, em)
+            dat.save()
+
+    return
+
 

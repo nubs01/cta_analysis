@@ -41,7 +41,7 @@ def fisher_test_response_changes(labels, time, pvals):
     pass
 
 
-def permutation_test(labels, data, alpha=0.05, group_col=0, n_boot=10000, n_cores=1):
+def permutation_test(labels, data, alpha=0.05, group_col=0, n_boot=1000, n_cores=1):
     '''data should be for a single tastant and 2 groups
     pvals is a MxN matrix with labels being an M-length array labellings the
     group of each row, if labels has columns, group_col specifies which column
@@ -106,7 +106,7 @@ def bootstrap_diff(lbls, data, agg_func=np.sum):
     return out
 
 
-def bootstrap(data, n_boot=10000, alpha=0.05, n_cores=1, func=np.sum):
+def bootstrap(data, n_boot=1000, alpha=0.05, n_cores=1, func=np.sum):
     if n_cores is None or n_cores > cpu_count():
         n_cores = cpu_count()-1
 
