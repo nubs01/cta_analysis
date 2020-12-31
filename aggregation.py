@@ -337,14 +337,14 @@ def fix_palatability(proj, pal_map=None):
             dat.save()
 
 
-def set_electrode_areas(proj, el_in_gc=ELECTRODES_IN_GC):
+def set_electrode_areas(proj, el_in_gc={}):
     exp_info = proj._exp_info
     for i, row in exp_info.iterrows():
-        exp = blechpy.load_experiment(row['exp_dir'])
         name = row['exp_name']
         if name not in el_in_gc.keys():
             continue
 
+        exp = blechpy.load_experiment(row['exp_dir'])
         ingc = el_in_gc[name]
         if ingc is 'right':
             el = np.arange(8, 24)

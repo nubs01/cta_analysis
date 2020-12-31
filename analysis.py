@@ -1,3 +1,4 @@
+from pushbullet_tools import push_message as pm
 import os
 import shutil
 import pdb
@@ -8,6 +9,7 @@ import pickle
 import aggregation as agg
 import plotting as plt
 import analysis_stats as stats
+import helper_funcs as hf
 import population_analysis as pop
 import hmm_analysis as hmma
 from scipy.stats import mannwhitneyu, spearmanr, sem, f_oneway, rankdata, pearsonr, ttest_ind
@@ -27,11 +29,11 @@ PAL_MAP = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
            'Citric Acid': 2, 'NaCl': 3}
 
 
-ELECTRODE_AREAS = {'RN5': 'right', 'RN10': 'both', 'RN11': 'right',
-                   'RN15': 'both', 'RN16': 'both', 'RN17': 'both',
-                   'RN18': 'both', 'RN19': 'right', 'RN20': 'right',
-                   'RN21': 'right', 'RN22': 'both', 'RN23': 'right',
-                   'RN24': 'both', 'RN25': 'both'}
+ELECTRODES_IN_GC = {'RN5': 'right', 'RN10': 'both', 'RN11': 'right',
+                    'RN15': 'both', 'RN16': 'both', 'RN17': 'both',
+                    'RN18': 'both', 'RN19': 'right', 'RN20': 'right',
+                    'RN21': 'right', 'RN22': 'both', 'RN23': 'right',
+                    'RN24': 'both', 'RN25': 'both'}
 
 
 ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 750, 'alpha': 0.05},
@@ -200,10 +202,12 @@ class ProjectAnalysis(object):
             rec_map = {'preCTA': 'postCTA', 'ctaTrain': 'ctaTest'}
             all_units = all_units.dropna(subset=['held_unit_name'])
             all_units = all_units[all_units['area'] == 'GC']
+            learn_map = self.project._exp_info.set_index('exp_name')['CTA_learned']
+            learn_map = learn_map.apply(lambda x: 'CTA' if x else 'No CTA').to_dict()
 
             # Output structures
             alpha = params['response_comparison']['alpha']
-            labels = [] # List of tuples: (exp_group, exp_name, held_unit_name, taste)
+            labels = [] # List of tuples: (exp_group, exp_name, cta_group, held_unit_name, taste)
             pvals = []
             differences = []
             sem_diffs = []
@@ -235,7 +239,8 @@ class ProjectAnalysis(object):
                     tastes, pvs, tstat, md, md_sem, ctime, dtime = \
                             compare_taste_responses(rec1, unit1, rec2, unit2,
                                                     params, method='anova')
-                    l = [(exp_group, exp_name, held_unit_name, t) for t in tastes]
+                    l = [(exp_group, exp_name, learn_map[exp_name],
+                          held_unit_name, t) for t in tastes]
                     labels.extend(l)
                     pvals.extend(pvs)
                     test_stats.extend(tstat)
@@ -263,7 +268,7 @@ class ProjectAnalysis(object):
                                                       exp_name, exp_group, tst,
                                                       save_file=fig_file)
 
-            labels = np.vstack(labels) # exp_group, held_unit_name, taste
+            labels = np.vstack(labels) # exp_group, exp_name, cta_group, held_unit_name, taste
             pvals = np.vstack(pvals)
             test_stats = np.vstack(test_stats)
             differences = np.vstack(differences)
@@ -297,14 +302,10 @@ class ProjectAnalysis(object):
         sem_diff = data['sem_diff']
         diff_time = data['diff_time']
         tastes = np.unique(labels[:, -1])
-        # Make new labels for plotting learned CTA vs didn't learn
-        learning_labels = labels.copy()
-        learn_map = self.project._exp_info[['exp_name', 'CTA_learned']].copy().set_index('exp_name')
-        for i, l in enumerate(labels):
-            if learn_map.loc[l[1]]['CTA_learned']:
-                learning_labels[i,0] = 'CTA'
-            else:
-                learning_labels[i,0] = 'No CTA'
+        all_df = hf.make_tidy_response_change_data(labels, pvals, comp_time, alpha=alpha)
+        all_df.to_csv(os.path.join(save_dir,
+                                   'held_unit_response_change_data.csv'),
+                      index=False)
 
         # Make aggregate plots
         plot_dir = os.path.join(save_dir, 'Held_Unit_Plots')
@@ -315,56 +316,43 @@ class ProjectAnalysis(object):
         plt.plot_mean_differences_heatmap(labels, diff_time, mean_diff,
                                           save_file=heatmap_file, t_start=0)
         for tst in tastes:
+            df = all_df[all_df['taste'] == tst]
             idx = np.where(labels[:,-1] == tst)[0]
             l = labels[idx, :]
-            learn_l = learning_labels[idx, :]
             p = pvals[idx, :]
             md = mean_diff[idx, :]
             sd = sem_diff[idx, :]
-            save_file = os.path.join(plot_dir, '%s_responses_changed.svg' % tst)
-            learn_file = os.path.join(plot_dir, '%s_responses_changed-CTA_groups.svg' % tst)
-            stat_file = os.path.join(save_dir, '%s_reponse_change_stats.txt' % tst)
-            learn_stat_file = os.path.join(save_dir, '%s_responses_changed-CTA_groups.txt' % tst)
+
+            hf.compare_response_changes(df, tst, plot_dir, save_dir,
+                                        f'{tst}_responses_changed',
+                                        group_col='exp_group', alpha=alpha,
+                                        exp_group='Cre', ctrl_group='GFP')
+
+            hf.compare_response_changes(df, tst, plot_dir, save_dir,
+                                        f'{tst}_responses_changed-CTA_groups',
+                                        group_col='cta_group', alpha=alpha,
+                                        exp_group='No CTA', ctrl_group='CTA')
+
+            sub_df = df.query('exp_group == "Cre" | (exp_group == "GFP" & '
+                              'cta_group == "CTA")')
+            hf.compare_response_changes(sub_df, tst, plot_dir, save_dir,
+                                        f'{tst}_responses_changed-exclude_GFP-NoCTA',
+                                        group_col='exp_group', alpha=alpha,
+                                        exp_group='Cre', ctrl_group='GFP')
+
             tmp_data = (p <= alpha).astype('int')
             # Compare Cre vs GFP
-            comp_p, test_stat, n_sigs = stats.permutation_test(l, tmp_data,
-                                                               alpha=alpha,
-                                                               n_boot=n_boot)
+            save_file = os.path.join(plot_dir, '%s_responses_changed-old.svg' % tst)
             plt.plot_held_percent_changed(l, comp_time, p, diff_time, md, sd,
-                                          alpha, tst, group_pvals=comp_p, save_file=save_file)
-            with open(stat_file, 'w') as f:
-                print('%s %% held units changed' % tst, file=f)
-                print('-'*80, file=f)
-                print('time (ms): %s' % comp_time, file=f)
-                if n_sigs is not None:
-                    for k,v in n_sigs.items():
-                        ix = np.where(l[:,0] == k)[0]
-                        print('%s (# units changed): %s' % (k, v), file=f)
-                        print('%s (# of units): %i' % (k, len(ix)), file=f)
-
-                print('mean_difference (%%): %s' % test_stat, file=f)
-                print('p-vals: %s' % comp_p, file=f)
-                print('n_boot: %i' % n_boot, file=f)
+                                          alpha, tst, save_file=save_file)
 
             # Compare CTA vs No CTA
-            comp_p, test_stat, n_sigs = stats.permutation_test(learn_l, tmp_data,
-                                                               alpha=alpha,
-                                                               n_boot=n_boot)
-            plt.plot_held_percent_changed(learn_l, comp_time, p, diff_time, md, sd,
-                                          alpha, tst, group_pvals=comp_p, save_file=learn_file)
-            with open(learn_stat_file, 'w') as f:
-                print('%s %% held units changed' % tst, file=f)
-                print('-'*80, file=f)
-                print('time (ms): %s' % comp_time, file=f)
-                if n_sigs is not None:
-                    for k,v in n_sigs.items():
-                        ix = np.where(learn_l[:,0] == k)[0]
-                        print('%s (# units changed): %s' % (k, v), file=f)
-                        print('%s (# of units): %i' % (k, len(ix)), file=f)
-
-                print('mean_difference (%%): %s' % test_stat, file=f)
-                print('p-vals: %s' % comp_p, file=f)
-                print('n_boot: %i' % n_boot, file=f)
+            learn_file = os.path.join(plot_dir,
+                                      '%s_responses_changed-CTA_groups-old.svg'
+                                      % tst)
+            plt.plot_held_percent_changed(l, comp_time, p, diff_time, md, sd,
+                                          alpha, tst,
+                                          group_col=2, save_file=learn_file)
 
             anim_dir = os.path.join(plot_dir, 'Per_Animal', tst)
             if not os.path.isdir(anim_dir):
@@ -550,9 +538,9 @@ class ProjectAnalysis(object):
         agg.set_electrode_areas(self.project, el_in_gc=ELECTRODES_IN_GC)
 
     def run(self, overwrite=False):
-        self.fix_areas()
-        self.fix_palatability()
-        self.detect_held_units(overwrite=overwrite, raw_waves=True)
+        #self.fix_areas()
+        #self.fix_palatability()
+        #self.detect_held_units(overwrite=overwrite, raw_waves=True)
         self.analyze_response_changes(overwrite=overwrite)
         self.make_aggregate_held_unit_plots()
         self.process_single_units(overwrite=overwrite)
@@ -1016,7 +1004,6 @@ class HmmAnalysis(object):
                     new_sorting.loc[j, 'late_state'] = row['late_state']
 
         self.write_sorted_hmms(new_sorting)
-        #self.plot_sorted_hmms(overwrite=overwrite, skip_rejected=(not plot_rejected))
         return new_sorting
 
     def write_sorted_hmms(self, sorted_hmms):
@@ -1171,11 +1158,25 @@ class HmmAnalysis(object):
         self.write_sorted_hmms(hmm_df)
         print('-'*80)
 
-    def plot_sorted_hmms(self, overwrite=False, skip_rejected=True):
+    def plot_sorted_hmms(self, overwrite=False, skip_tags=[],
+                         sorting_tag=None, save_dir=None):
+        if save_dir is None:
+            save_dir = self.save_dir
+            if sorting_tag is not None:
+                save_dir = os.path.join(save_dir, sorting_tag)
+
         plot_dirs = {'best': os.path.join(self.save_dir, 'Best_HMMs'),
                      'rejected': os.path.join(self.save_dir, 'Rejected_HMMs'),
                      'refit': os.path.join(self.save_dir, 'Refit_HMMs')}
         sorted_hmms = self.get_sorted_hmms()
+        if sorting_tag is not None:
+            sorted_hmms = sorted_hmms.query('sorting == @sorting_tag')
+            tags = [sorting_tag]
+            plot_dirs = {sorting_tag: save_dir}
+        else:
+            tags = sorted_hmm.sorting.unique()
+            plot_dirs = {x: os.path.join(save_dir, x) for x in tags}
+
         for k,v in plot_dirs.items():
             if os.path.isdir(v) and overwrite:
                 shutil.rmtree(v)
@@ -1187,11 +1188,13 @@ class HmmAnalysis(object):
         for i, row in sorted_hmms.iterrows():
             fn = '%s_%s_HMM%i-%s.svg' % (row['exp_name'], row['rec_group'],
                                          row['hmm_id'], row['taste'])
+
+            #print(f'plotting {fn}...')
             if row['sorting'] not in plot_dirs.keys():
                 pbar.update()
                 continue
 
-            if skip_rejected and row['sorting'] == 'rejected':
+            if row['sorting'] in skip_tags:
                 pbar.update()
                 continue
 
@@ -1200,7 +1203,11 @@ class HmmAnalysis(object):
                 pbar.update()
                 continue
 
-            plt.plot_hmm(row['rec_dir'], row['hmm_id'], save_file=fn)
+            es = row['early_state']
+            ls = row['late_state']
+            title_extra = f'Early: {es}, Late: {ls}'
+            plt.plot_hmm(row['rec_dir'], row['hmm_id'], save_file=fn,
+                         title_extra=title_extra)
             pbar.update()
 
         pbar.close()
@@ -1378,7 +1385,7 @@ class HmmAnalysis(object):
 
     def process_fitted_hmms(self, overwrite=False):
         ho = self.get_hmm_overview(overwrite=overwrite)
-        self.sort_hmms_by_params(overwrite=True)
+        self.sort_hmms_by_params(overwrite=overwrite)
         self.mark_early_and_late_states()
         sorted_df = self.get_sorted_hmms()
         #sorted_df = self.sort_hmms(overwrite=True)
@@ -1388,16 +1395,23 @@ class HmmAnalysis(object):
                 continue
 
             save_dir = os.path.join(self.save_dir, set_name)
-            if os.path.isdir(save_dir):
-                os.removedirs(save_dir)
+            if os.path.isdir(save_dir) and overwrite:
+                shutil.rmtree(save_dir)
 
-            os.mkdir(save_dir)
-            best_hmms = self.get_best_hmms(overwrite=True, save_dir=save_dir, sorting=set_name)
-            self.analyze_hmms(overwrite=True, save_dir=save_dir)
+            if not os.path.isdir(save_dir):
+                os.mkdir(save_dir)
+
+            best_hmms = self.get_best_hmms(overwrite=True, save_dir=save_dir,
+                                           sorting=set_name)
+            self.analyze_hmms(overwrite=overwrite, save_dir=save_dir)
             self.plot_hmm_coding_and_timing(save_dir=save_dir)
-        #self.plot_sorted_hmms(overwrite=False)
-        #self.plot_all_hmms()
-        return sorted_df#, best_hmms
+            plot_dir = os.path.join(save_dir, 'HMM Plots')
+            os.mkdir(plot_dir)
+            self.plot_sorted_hmms(overwrite=overwrite, save_dir=plot_dir,
+                                  sorting_tag=set_name)
+
+        pm.push_note('HMM Processing Complete', ':)')
+        return sorted_df
 
     def plot_hmms_for_comp(self):
         sorted_df = self.get_sorted_hmms()
@@ -1473,6 +1487,17 @@ class HmmAnalysis(object):
 
         ho[['early_state', 'late_state']] = ho.apply(apply_states, axis=1)
         self.write_sorted_hmms(ho)
+
+    def iterhmms(self, **kwargs):
+        ho = self.get_sorted_hmms()
+        qstr = ' and '.join([f'{k} == "{v}"' for k,v in kwargs.items()])
+        if qstr != '':
+            ho = ho.query(qstr)
+
+        for i, row in ho.iterrows():
+            h5 = hmma.get_hmm_h5(row['rec_dir'])
+            hmm, _, params = phmm.load_hmm_from_hdf5(h5, row['hmm_id'])
+            yield hmm, params
 
     def sort_hmms_by_params(self, overwrite=False):
         sorted_df = self.get_sorted_hmms()

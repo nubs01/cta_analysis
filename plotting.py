@@ -309,9 +309,9 @@ def plot_mean_differences_heatmap(labels, time, mean_diffs, ax=None, cbar=True,
 
 def plot_held_percent_changed(labels, time, pvals, diff_time, mean_diffs,
                               sem_diffs, alpha, taste, group_pvals=None,
-                              save_file=None):
+                              group_col=0, save_file=None):
     # Labels: exp_group, exp_name, held_unit_name, taste
-    groups = np.unique(labels[:, 0])
+    groups = np.unique(labels[:, group_col])
     Ngrp = len(groups)
     # Pad time for proper plotting
     # time is currently bin centers
@@ -350,7 +350,7 @@ def plot_held_percent_changed(labels, time, pvals, diff_time, mean_diffs,
     mag_axes = [fig.add_subplot(Ngrp, 2, 2+ 2*i) for i in range(Ngrp)]
 
     for ax, m_ax, grp in zip(axes, mag_axes, groups):
-        idx = np.where(labels[:, 0] == grp)[0]
+        idx = np.where(labels[:, group_col] == grp)[0]
         N = len(idx)
         p = pvals[idx, :]
         meanD = mean_diffs[idx, :]
@@ -1152,7 +1152,7 @@ def plot_state_breakdown(df, save_dir):
         plt.close(g.fig)
 
 
-def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
+def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None, title_extra=None):
     # Grab data
     if rec_dir[-1] == os.sep:
         rec_dir = rec_dir[:-1]
@@ -1178,6 +1178,9 @@ def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None):
     thresh = row['threshold']
     taste = row['taste']
     title = '%s %s\nHMM #%i: %s' % (anim, rec_group, hmm_id, taste)
+    if title_extra is not None:
+        title = f'{title}\n{title_extra}'
+
     n_trials = row['n_trials']
     n_states = row['n_states']
     colors = hplt.get_hmm_plot_colors(n_states)
@@ -1302,9 +1305,11 @@ def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None):
 
             # Only include trials where both early and late states are present
             min_pts = int(50 / (1000*params['dt']))
-            e_trials = get_valid_trials(seqs, row['early_state'], min_pts=min_pts, time=time)
-            l_trials = get_valid_trials(seqs, row['late_state'], min_pts=min_pts, time=time)
-            valid_trials = np.intersect1d(e_trials, l_trials)
+            es, ls = row[['early_state', 'late_state']]
+            # e_trials = get_valid_trials(seqs, row['early_state'], min_pts=min_pts, time=time)
+            # l_trials = get_valid_trials(seqs, row['late_state'], min_pts=min_pts, time=time)
+            # valid_trials = np.intersect1d(e_trials, l_trials)
+            valid_trials = get_valid_trials(seqs, [es, ls], min_pts=min_pts, time=time)
             if len(valid_trials) == 0:
                 print('No valid trials found for %s %s %s' % (row['exp_name'], row['rec_group'], tst))
                 continue
@@ -1331,7 +1336,9 @@ def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None):
 
         _, ax = grouped_heatmap(sequences, row_id, sort_stat, X=time, ax=ax, cbar=cbar)
         #ax.set_xticks(np.linspace(time[0], time[-1], 10))
-        ax.axvline(np.where(time==0)[0], color='b', linewidth=3, linestyle='--')
+        if time[0] <= 0:
+            ax.axvline(np.where(time==0)[0], color='b', linewidth=3, linestyle='--')
+
         ax.yaxis.set_tick_params(length=0, labelrotation=0)
         ax.set_title(tst)
 
@@ -1842,8 +1849,10 @@ def plot_hmm_timings(df, save_file=None):
 
 def plot_median_gamma_probs(best_hmms, save_file=None):
     # Drop GFP animals that did not learn CTA and Cre animals that did learn
-   # tmp = best_hmms.query('(exp_group == "Cre" and cta_group == "No CTA") or (cta_group == "CTA" and exp_group == "GFP")')
-   # best_hmms = tmp.copy()
+    # tmp = best_hmms.query('(exp_group == "Cre" and cta_group == "No CTA") or
+    # (cta_group == "CTA" and exp_group == "GFP")')
+    # best_hmms = tmp.copy()
+    best_hmms = best_hmms.dropna()
 
     # diff line style for each time_group
     # diff color for each exp_group
@@ -1868,6 +1877,7 @@ def plot_median_gamma_probs(best_hmms, save_file=None):
             if np.isnan(row['early_state']) or np.isnan(row['late_state']):
                 continue
 
+            anim, rec_group, taste = row[['exp_name', 'rec_group', 'taste']]
             h5_file = get_hmm_h5(row['rec_dir'])
             hmm, t, params = phmm.load_hmm_from_hdf5(h5_file, int(row['hmm_id']))
             es = int(row['early_state'])
@@ -1882,10 +1892,16 @@ def plot_median_gamma_probs(best_hmms, save_file=None):
 
             # Drop any trials where the state in question is not present in the
             # decoded sequence, or the duration of the state is less than 50ms
-            e_trials = get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
-            l_trials = get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
+            valid_trials = get_valid_trials(state_seqs, [es, ls],
+                                            min_pts=int(.05/params['dt']),
+                                            time=t)
+            # e_trials = get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
+            # l_trials = get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
             # Only plot trials where both states are present
-            valid_trials = np.intersect1d(e_trials, l_trials)
+            #valid_trials = np.intersect1d(e_trials, l_trials)
+            if len(valid_trials) == 0:
+                print(f'No valid trials for {anim} - {rec_group} - {taste}')
+                continue
 
             eprobs = eprobs[valid_trials, :]
             lprobs = lprobs[valid_trials, :]
@@ -1952,6 +1968,7 @@ def plot_mean_gamma_probs(best_hmms, save_file=None):
             if np.isnan(row['early_state']) or np.isnan(row['late_state']):
                 continue
 
+            anim, rec_group, taste = row[['exp_name', 'rec_group', 'taste']]
             h5_file = get_hmm_h5(row['rec_dir'])
             hmm, t, params = phmm.load_hmm_from_hdf5(h5_file, int(row['hmm_id']))
             es = int(row['early_state'])
@@ -1966,10 +1983,17 @@ def plot_mean_gamma_probs(best_hmms, save_file=None):
 
             # Drop any trials where the state in question is not present in the
             # decoded sequence, or the duration of the state is less than 50ms
-            e_trials = get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
-            l_trials = get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
-            eprobs = eprobs[e_trials, :]
-            lprobs = lprobs[l_trials, :]
+            valid_trials =  get_valid_trials(state_seqs, [es, ls],
+                                             min_pts=int(.05/params['dt']),
+                                             time=t)
+            #e_trials = get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
+            #l_trials = get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
+            if len(valid_trials) == 0:
+                print(f'No valid trials for {anim} - {rec_group} - {taste}')
+                continue
+
+            eprobs = eprobs[valid_trials, :]
+            lprobs = lprobs[valid_trials, :]
             emed = np.mean(eprobs, axis=0)
             lmed = np.mean(lprobs, axis=0)
             early_traces.append(emed)
@@ -2059,9 +2083,9 @@ def grouped_heatmap(data, group_var, sort_var, X=None, ax=None, smoothing_width=
     return fig, ax
 
 
-def get_valid_trials(state_seqs, state, min_pts=1, time=None):
-    '''returns the indices of all trials where the given state is present and
-    has more than min_pts consecutive points in that state. If time is given,
+def get_valid_trials(state_seqs, states, min_pts=1, time=None):
+    '''returns the indices of all trials where all of the given states are present and
+    have more than min_pts consecutive points in each state. If time is given,
     this will only return trials in which the state is present after t=0
     '''
     if time is not None:
@@ -2070,16 +2094,18 @@ def get_valid_trials(state_seqs, state, min_pts=1, time=None):
 
     out = []
     for i, row in enumerate(state_seqs):
-        if state not in row:
+        if any([x not in row for x in states]):
             continue
 
+        good = True
         summary = summarize_sequence(row)
-        idx = np.where(summary[:,0] == state)[0]
-        summary = summary[idx, :]
-        if not any(summary[:,-1] >= min_pts):
-            continue
+        for state in states:
+            idx = np.where(summary[:,0] == state)[0]
+            if not any(summary[idx,-1] >= min_pts):
+                good = False
 
-        out.append(i)
+        if good:
+            out.append(i)
 
     return np.array(out)
 

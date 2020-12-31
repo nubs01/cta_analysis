@@ -1,7 +1,8 @@
 import numpy as np
+import pandas as pd
 import itertools as it
 from joblib import Parallel, delayed, cpu_count
-from scipy.stats import t, fisher_exact, shapiro, levene
+from scipy.stats import t, fisher_exact, shapiro, levene, chisquare
 from sklearn.model_selection import LeavePOut
 from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
@@ -40,6 +41,57 @@ def dunnetts_post_hoc(X0, X, alpha):
 def fisher_test_response_changes(labels, time, pvals):
     pass
 
+
+def chisquared_test(labels, data, alpha=0.05, group_col=0):
+    '''performs chi-squared test to compare the distributions between 2 groups
+    data should be binary integers (0 or 1 in each element). Could also work
+    with integer counts.
+    '''
+    groups = np.unique(labels[:,group_col])
+    n_grps = len(groups)
+    if n_grps == 1:
+        print('Only 1 group. Skipping Comparison')
+        return None, None, None
+    elif n_grps != 2:
+        raise ValueError('Cannot compare more than 2 groups.')
+
+    n_samps = {g: np.sum(labels[:, group_col] == g) for g in groups}
+    lbls = labels[:, group_col]
+    ix = np.where(lbls == groups[0])[0]
+    iy = np.where(lbls == groups[1])[0]
+    n_x = np.sum(data[ix,:], axis=0)
+    n_y = np.sum(data[iy,:], axis=0)
+    stat, p = chisquare(n_x, f_exp=n_y)
+    comp_data = {groups[0]: n_x, groups[1]: n_y}
+    return stat, p, comp_data
+
+
+def chi2_with_posthoc(df, alpha=0.05, group_col='exp_group', taste='Saccharin',
+                      exp_group='Cre', ctrl_group='GFP'):
+    df = df[df['taste'] == taste]
+    tmp_df = df.groupby([group_col, 'time_bin'])['n_diff'].sum().reset_index()
+    table1 = tmp_df.pivot(index=group_col, columns='time_bin', values='n_diff')
+    stat_all, p_all = chisquare(table1.loc[exp_group], f_exp=table1.loc[ctrl_group])
+    tmp_df = df.groupby([group_col, 'time_bin'])['n_same'].sum().reset_index()
+    table2 = tmp_df.pivot(index=group_col, columns='time_bin', values='n_same')
+    percent_diff = 100*table1 / (table1+table2)
+
+    # Now go through each time and look at the 2x2 contingency tables
+    out_data = []
+    out_tables = {}
+    n_groups = len(df['time_bin'].unique())
+    for (t, tg), grp in df.groupby(['time', 'time_bin']):
+        tbl = grp.groupby(group_col)[['n_diff', 'n_same']].sum()
+        s, p = chisquare(tbl.loc[exp_group], f_exp=tbl.loc[ctrl_group])
+        padj = p*n_groups
+        reject = True if padj <= alpha else False
+        tmp = {'time': t, 'time_bin': tg, 'stat': s, 'p': p, 'p-adj': padj,
+               'reject': reject}
+        out_data.append(tmp)
+        out_tables[tg] = tbl
+
+    posthoc_df = pd.DataFrame(out_data)
+    return stat_all, p_all, table1, posthoc_df, out_tables, percent_diff
 
 def permutation_test(labels, data, alpha=0.05, group_col=0, n_boot=1000, n_cores=1):
     '''data should be for a single tastant and 2 groups

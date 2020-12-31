@@ -1389,7 +1389,7 @@ def LDA_classifier_confusion(group, label_col, state_col, all_units,
     return 100 * counts[0] / np.sum(counts)  ## returns % nacl
 
 
-def choose_early_late_states(hmm, early_window=[100,500], late_window=[750, 1000]):
+def choose_early_late_states(hmm, early_window=[200,750], late_window=[750, 1500]):
     '''picks state that most often appears in the late_window as the late state, and the state that most commonly appears in the early window (excluding the late state) as the early state.
 
     Parameters
@@ -1405,15 +1405,28 @@ def choose_early_late_states(hmm, early_window=[100,500], late_window=[750, 1000
     '''
     seqs = hmm.stat_arrays['best_sequences']
     time = hmm.stat_arrays['time']
+    trial_win = np.where(time > 0)[0]
     eidx = np.where((time >= early_window[0]) & (time < early_window[1]))[0]
     lidx = np.where((time >= late_window[0]) & (time < late_window[1]))[0]
+    #drop single trial states
+    good_trials = []
+    for i, s in enumerate(seqs):
+        if len(np.unique(s[trial_win])) != 1:
+            good_trials.append(i)
 
-    lbins = ebins = np.arange(hmm.n_states)
+    good_trials = np.array(good_trials)
+    if len(good_trials) == 0:
+        return None, None
+
+    seqs = seqs[good_trials, :]
+
+    lbins = np.arange(1, hmm.n_states)
+    ebins = np.arange(0, hmm.n_states-1)
     lcount = []
     ecount = []
-    for i in lbins:
-        lcount.append(np.sum(seqs[:, lidx] == i))
+    for i,j in zip(ebins, lbins):
         ecount.append(np.sum(seqs[:, eidx] == i))
+        lcount.append(np.sum(seqs[:, lidx] == j))
 
     #lcount, lbins = np.histogram(seqs[:, lidx], np.arange(hmm.n_states+1))
     #ecount, ebins = np.histogram(seqs[:, eidx], np.arange(hmm.n_states+1))
@@ -1424,6 +1437,7 @@ def choose_early_late_states(hmm, early_window=[100,500], late_window=[750, 1000
     for count, idx in zip(ecount, ebins):
         if count > tmp and idx != late_state:
             early_state = idx
+            tmp = count
 
     return early_state, late_state
 
