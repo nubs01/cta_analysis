@@ -14,6 +14,7 @@ import aggregation as agg
 import analysis_stats as stats
 from matplotlib.lines import Line2D
 from matplotlib.patches import Ellipse, Patch
+import itertools as it
 import matplotlib.colors as mc
 import colorsys
 import glob
@@ -23,6 +24,10 @@ TASTE_COLORS = {'Saccharin': 'tab:purple', 'Quinine': 'tab:red',
                 'NaCl': 'tab:green', 'Citric Acid': 'tab:orange',
                 'Water': 'tab:blue'}
 EXP_COLORS = {'Cre': 'tab:blue', 'GFP': 'tab:green'}
+ORDERS = {'exp_group': ['GFP', 'Cre'],
+          'cta_group': ['CTA', 'No CTA'],
+          'taste': ['Water', 'NaCl', 'Citric Acid', 'Quinine', 'Saccharin'],
+          'time_group': ['preCTA', 'postCTA']}
 
 def plot_unit_waveforms(rec_dir, unit, ax=None, save_file=None):
     if ax is None:
@@ -1316,6 +1321,20 @@ def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None):
 
             seqs = seqs[valid_trials, :]
 
+            # Convert es to 1, ls to 2, all others to negative numbers
+            s2 = seqs.copy()
+            tmp_i = 0
+            for n in range(params['n_states']):
+                if n == es:
+                    m = 1
+                elif n == ls:
+                    m = 2
+                else:
+                    m = tmp_i
+                    tmp_i = tmp_i - 1
+
+                seqs[s2 == n] = m
+
             sequences.append(seqs)
             rid = '%s\n%s' % (row[group_col], row['time_group'])
             row_id.extend([rid]*seqs.shape[0])
@@ -2035,7 +2054,8 @@ def plot_mean_gamma_probs(best_hmms, save_file=None):
         return fig
 
 
-def grouped_heatmap(data, group_var, sort_var, X=None, ax=None, smoothing_width=None, cbar=True):
+def grouped_heatmap(data, group_var, sort_var, X=None, ax=None,
+                    smoothing_width=None, cbar=True, cmap='rocket'):
     if ax is None:
         fig, ax = plt.subplots(figsize=(15,10))
     else:
@@ -2079,8 +2099,65 @@ def grouped_heatmap(data, group_var, sort_var, X=None, ax=None, smoothing_width=
     plot_df = pd.DataFrame(plot_dat, columns=X)
     g = sns.heatmap(plot_df, mask=mask, rasterized=True,
                     ax=ax, robust=True,
-                    yticklabels=ylabels, cbar=cbar)
+                    yticklabels=ylabels, cbar=cbar, cmap=cmap)
     return fig, ax
+
+
+def plot_state_timing_comparison(df, group_col='exp_group', taste='Saccharin'):
+    '''plot early state end time and late state start time, box plot with
+    animal means plotted with lines showing change from pre to post
+    '''
+    df = df.query('taste == "Saccharin"')
+    ldf = df.query('state_group == "late"')
+    edf = df.query('state_group == "early"')
+    fig, axes = plt.subplots(nrows=2)
+
+    assert group_col in ORDERS.keys(), f'No group ordering found for {group_col}'
+    hue_order = ORDERS['time_group']
+    groups = df[group_col].unique()
+    group_order = [x for x in ORDERS[group_col] if x in groups]
+
+
+def plot_box_and_paired_points(df, x, y, hue, order=None, hue_order=None,
+                               subjects=None, estimator=np.mean, **kwargs):
+    groups = df[x].unique()
+    hues = df[hue].unique()
+    if order is None:
+        order = groups
+
+    if hue_order is None:
+        hue_order = hues
+
+    # early state end time
+    ax = sns.boxplot(data=df, x=x, hue=hue, y=y, order=order,
+                     hue_order=hue_order, **kwargs)
+
+    xpts = []
+    for l in g.lines:
+        x1, x2 = l.get_xdata()
+        if x1 == x2 and x1 not in xpts:
+            xpts.append(x1)
+
+    plot_pts = []
+    xmap = {}
+    for (g, h), xp in zip(it.product(order, hue_order), xpts):
+        xmap[(g,h)] = xp
+
+    for subj, grp in df.groupby(subjects):
+        for g in grp[x].unique():
+            xvals = []
+            yvals = []
+            yerr = []
+            for h in hue_order:
+                if h not in grp[hue]:
+                    continue
+
+                tmp = grp[(grp[hue] == h) & (grp[x] == g)]
+                yvals.append(estimator(tmp[y]))
+                xvals.append(xmap[(g, h)])
+                yerr.append(error_func(tmp[y]))
+
+            ax.errorbar(xvals, yvals, yerr=yerr, alpha=0.6, marker='.', markersize=10)
 
 
 def get_valid_trials(state_seqs, states, min_pts=1, time=None):

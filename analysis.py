@@ -881,6 +881,7 @@ class HmmAnalysis(object):
                       'sorted_hmms': os.path.join(save_dir, 'sorted_hmms.feather'),
                       'best_hmms': os.path.join(save_dir, 'best_hmms.feather'),
                       'hmm_coding': os.path.join(save_dir, 'hmm_coding.feather'),
+                      'hmm_confusion': os.path.join(save_dir, 'hmm_confusion.feather'),
                       'hmm_timings': os.path.join(save_dir, 'hmm_timings.feather')}
 
         self.base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
@@ -1314,11 +1315,14 @@ class HmmAnalysis(object):
         all_units, _  = ProjectAnalysis(self.project).get_unit_info()
         coding_file = self.files['hmm_coding']
         timing_file = self.files['hmm_timings']
+        confusion_file = self.files['hmm_confusion']
         if save_dir is not None:
             cfn = os.path.basename(coding_file)
+            cnfn = os.path.basename(confusion_file)
             tfn = os.path.basename(timing_file)
             coding_file = os.path.join(save_dir, cfn)
             timing_file = os.path.join(save_dir, tfn)
+            confusion_file = os.path.join(save_dir, cnfn)
 
         best_hmms = self.get_best_hmms(save_dir=save_dir)
         timing_stats = timing_file.replace('feather', 'txt')
@@ -1334,19 +1338,29 @@ class HmmAnalysis(object):
             timings = hmma.analyze_hmm_state_timing(best_hmms)
             feather.write_dataframe(timings, timing_file)
 
+        if os.path.isifile(confusion_file) and not overwrite:
+            confusion = feather.read_dataframe(confusion_file)
+        else:
+            confusion = hmma.saccharin_confusion_analysis(best_hmms, all_units,
+                                                          area='GC',
+                                                          single_unit=True,
+                                                          repeats=50)
+            feather.write_dataframe(confusion, confusion_file)
+
+
         if not os.path.isfile(timing_stats) or overwrite:
             descrip = hmma.describe_hmm_state_timings(timings)
             with open(timing_stats, 'w') as f:
                 print(descrip, file=f)
 
-        return coding, timings
+        return coding, timings, confusion
 
     def plot_hmm_coding_and_timing(self, save_dir=None):
         if save_dir is None:
             save_dir = self.save_dir
 
         best_hmms = self.get_best_hmms(save_dir=save_dir)
-        coding, timings = self.analyze_hmms(save_dir=save_dir)
+        coding, timings, confusion = self.analyze_hmms(save_dir=save_dir)
         coding_fn = os.path.join(save_dir, 'HMM_coding.png')
         timing_fn = os.path.join(save_dir, 'HMM_timing.png')
         prob_fn = os.path.join(save_dir, 'HMM_Median_Gamma_Probs.png')
@@ -1384,33 +1398,40 @@ class HmmAnalysis(object):
             print('\n'.join(out), file=f)
 
     def process_fitted_hmms(self, overwrite=False):
-        ho = self.get_hmm_overview(overwrite=overwrite)
-        self.sort_hmms_by_params(overwrite=overwrite)
-        self.mark_early_and_late_states()
-        sorted_df = self.get_sorted_hmms()
-        #sorted_df = self.sort_hmms(overwrite=True)
-        param_sets = sorted_df.sorting.unique()
-        for set_name in param_sets:
-            if set_name == 'rejected':
-                continue
+        with pm.push_alert(success_msg='HMM Processing Complete! :D'):
+            ho = self.get_hmm_overview(overwrite=overwrite)
+            self.sort_hmms_by_params(overwrite=overwrite)
+            self.mark_early_and_late_states()
+            sorted_df = self.get_sorted_hmms()
+            #sorted_df = self.sort_hmms(overwrite=True)
+            param_sets = sorted_df.sorting.unique()
+            for set_name in param_sets:
+                if set_name == 'rejected':
+                    continue
 
-            save_dir = os.path.join(self.save_dir, set_name)
-            if os.path.isdir(save_dir) and overwrite:
-                shutil.rmtree(save_dir)
+                save_dir = os.path.join(self.save_dir, set_name)
+                if os.path.isdir(save_dir) and overwrite:
+                    shutil.rmtree(save_dir)
 
-            if not os.path.isdir(save_dir):
-                os.mkdir(save_dir)
+                if not os.path.isdir(save_dir):
+                    os.mkdir(save_dir)
 
-            best_hmms = self.get_best_hmms(overwrite=True, save_dir=save_dir,
-                                           sorting=set_name)
-            self.analyze_hmms(overwrite=overwrite, save_dir=save_dir)
-            self.plot_hmm_coding_and_timing(save_dir=save_dir)
-            plot_dir = os.path.join(save_dir, 'HMM Plots')
-            os.mkdir(plot_dir)
-            self.plot_sorted_hmms(overwrite=overwrite, save_dir=plot_dir,
-                                  sorting_tag=set_name)
+                best_hmms = self.get_best_hmms(overwrite=True, save_dir=save_dir,
+                                               sorting=set_name)
+                if sum(sorted_df['sorting'] == set_name) > 30:
+                    self.analyze_hmms(overwrite=True, save_dir=save_dir)
+                    self.plot_hmm_coding_and_timing(save_dir=save_dir)
 
-        pm.push_note('HMM Processing Complete', ':)')
+                plot_dir = os.path.join(save_dir, 'HMM Plots')
+                if os.path.isdir(plot_dir) and overwrite:
+                    shutil.rmtree(plot_dir)
+
+                if not os.path.isdir(plot_dir):
+                    os.mkdir(plot_dir)
+
+                self.plot_sorted_hmms(overwrite=overwrite, save_dir=plot_dir,
+                                      sorting_tag=set_name)
+
         return sorted_df
 
     def plot_hmms_for_comp(self):
@@ -1506,13 +1527,14 @@ class HmmAnalysis(object):
 
         sorted_df['sorting'] = 'rejected'
         sorted_df['sort_method'] = 'auto'
-        met_params = sorted_df.query('notes == "sequential - final"')
+        met_params = sorted_df.query('(notes == "sequential - final") |'
+                                     ' (notes == "sequential - low thresh")')
         param_cols = ['n_states', 'time_start', 'time_end', 'area',
-                      'unit_type', 'dt', 'n_trials']
+                      'unit_type', 'dt', 'n_trials', 'notes']
         param_num = 0
         for name, group in met_params.groupby(param_cols):
             param_label = ('%i states, %i to %i ms, %s %s units, '
-                           'dt = %g, n_trials = %i' % name)
+                           'dt = %g, n_trials = %i, notes: %s' % name)
             summary = ['-'*80,
                        'parameter #: %i' % param_num,
                        '# of states: %i' % name[0],
@@ -1521,12 +1543,13 @@ class HmmAnalysis(object):
                        'unit type: %s' % name[4],
                        'dt: %g' % name[5],
                        'n_trials: %i' % name[6],
+                       'notes: %s' % name[7],
                        '# of HMMs: %i' % len(group),
                        '-'*80]
             print('\n'.join(summary))
-            if len(group) < 30:
-                param_num += 1
-                continue
+            # if len(group) < 30:
+            #     param_num += 1
+            #     continue
 
             idx = np.array((group.index))
             sorted_df.loc[idx, 'sorting'] = 'params #%i' % param_num
@@ -2041,36 +2064,42 @@ def fit_anim_hmms(anim):
     base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
                    'max_iter': 200, 'n_repeats': 50, 'time_start': -250,
                    'time_end': 2000, 'n_states': 3, 'area': 'GC',
-                   'hmm_class': 'PoissonHMM', 'threshold':1e-6,
-                   'notes': 'sequential - final'}
+                   'hmm_class': 'PoissonHMM', 'threshold':1e-10,
+                   'notes': 'sequential - low thresh'}
 
     for rec_dir in file_dirs:
+        units = phmm.query_units(rec_dir, 'single', area='GC')
+        if len(units) < 2:
+            continue
+
         handler = phmm.HmmHandler(rec_dir)
         p = base_params.copy()
         handler.add_params(p)
-        p2 = p.copy()
-        p2['n_states'] = 2
-        p2['time_start'] = 0
-        handler.add_params(p2)
-        p3 = p.copy()
-        p3['n_states'] = 2
-        p3['time_start'] = 200
-        handler.add_params(p3)
-        #p4 = p.copy()
-        #p4['time_start'] = -1000
-        #p4['n_states'] = 4
-        #handler.add_params(p4)
-        if 'ctaTrain' in rec_dir:
-            p5 = p.copy()
-            _ = p5.pop('n_trials')
-            handler.add_params(p5)
+        # p2 = p.copy()
+        # p2['n_states'] = 2
+        # p2['time_start'] = 0
+        # handler.add_params(p2)
+        # p3 = p.copy()
+        # p3['n_states'] = 2
+        # p3['time_start'] = 200
+        # handler.add_params(p3)
+        # p4 = p.copy()
+        # p4['time_start'] = -1000
+        # p4['n_states'] = 4
+        # handler.add_params(p4)
+        # if 'ctaTrain' in rec_dir:
+        #     p5 = p.copy()
+        #     _ = p5.pop('n_trials')
+        #     handler.add_params(p5)
 
-        print('Fitting %s' % os.path.basename(rec_dir))
-        if LOCAL_MACHINE == 'StealthElf':
-            handler.run(constraint_func=hmma.sequential_constrained)
-        elif LOCAL_MACHINE == 'Mononoke':
-            with parallel_backend('multiprocessing'):
+        dataname = os.path.basename(rec_dir)
+        with pm.push_alert(success_msg=f'Done fitting for {dataname}'):
+            print('Fitting %s' % os.path.basename(rec_dir))
+            if LOCAL_MACHINE == 'StealthElf':
                 handler.run(constraint_func=hmma.sequential_constrained)
+            elif LOCAL_MACHINE == 'Mononoke':
+                with parallel_backend('multiprocessing'):
+                    handler.run(constraint_func=hmma.sequential_constrained)
 
 
 def final_refits(needed_hmms):

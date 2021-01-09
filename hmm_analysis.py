@@ -389,21 +389,6 @@ def ID_pal_hmm_analysis(best_df, plot_dir=None):
     return pd.DataFrame(out)
 
 
-def saccharin_confusion_analysis(best_df):
-    confusion_tastes = ['NaCl', 'Quinine', 'Saccharin']
-    for name, group in best_df.groupby(['exp_name', 'time_group']):
-        if all([x in group.taste for x in confusion_tastes]):
-            econ = NB_classifier_confusion(group, label_col='taste',
-                                           state_col='early_state',
-                                           train_labels=['NaCl', 'Quinine'],
-                                           test_labels=['Saccharin'])
-
-            lcon = get_NB_classifier_confusion(group, label_col='taste',
-                                               state_col='late_state',
-                                               train_labels=['NaCl', 'Quinine'],
-                                               test_labels=['Saccharin'])
-
-
 def run_NB_ID_classifier_deprecated(group, states):
     '''
     
@@ -723,7 +708,8 @@ def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50, remov
         prestim = spike_array[:,:, idx]
         prestim = np.sum(prestim, axis=-1) / (dt*len(idx))
         baseline = np.mean(prestim, axis=0)
-
+    else:
+        baseline = 0
 
     # spike_array is trial x neuron x time
     n_trials, n_cells, n_steps = spike_array.shape
@@ -1389,7 +1375,7 @@ def LDA_classifier_confusion(group, label_col, state_col, all_units,
     return 100 * counts[0] / np.sum(counts)  ## returns % nacl
 
 
-def choose_early_late_states(hmm, early_window=[200,750], late_window=[750, 1500]):
+def choose_early_late_states(hmm, early_window=[150,500], late_window=[750, 1500]):
     '''picks state that most often appears in the late_window as the late state, and the state that most commonly appears in the early window (excluding the late state) as the early state.
 
     Parameters
@@ -1419,9 +1405,10 @@ def choose_early_late_states(hmm, early_window=[200,750], late_window=[750, 1500
         return None, None
 
     seqs = seqs[good_trials, :]
+    n_trials = seqs.shape[0]
 
-    lbins = np.arange(1, hmm.n_states)
-    ebins = np.arange(0, hmm.n_states-1)
+    lbins = list(p.arange(1, hmm.n_states))
+    ebins = list(np.arange(0, hmm.n_states-1))
     lcount = []
     ecount = []
     for i,j in zip(ebins, lbins):
@@ -1430,14 +1417,34 @@ def choose_early_late_states(hmm, early_window=[200,750], late_window=[750, 1500
 
     #lcount, lbins = np.histogram(seqs[:, lidx], np.arange(hmm.n_states+1))
     #ecount, ebins = np.histogram(seqs[:, eidx], np.arange(hmm.n_states+1))
+    pairs = [(x,y) for x,y in product(ebins,lbins) if x!=y]
+    probs = []
+    for x,y in pairs:
+        i1 = ebins.index(x)
+        i2 = lbins.index(y)
+        p1 = ecount[i1] / n_trials
+        p2 = lcount[i2] / n_trials
+        probs.append(p1 * p2)
 
-    late_state = lbins[np.argmax(lcount)]
-    tmp = 0
-    early_state = None
-    for count, idx in zip(ecount, ebins):
-        if count > tmp and idx != late_state:
-            early_state = idx
-            tmp = count
+    best_idx = np.argmax(probs)
+    early_state, late_state = pairs[best_idx]
+
+    # early_state = ebins[np.argmax(ecount)]
+    # if early_state in lbins:
+    #     idx = list(lbins).index(early_state)
+    #     lbins = list(lbins)
+    #     lbins.pop(idx)
+    #     lcount = list(lcount)
+    #     lcount.pop(idx)
+
+    # late_state = lbins[np.argmax(lcount)]
+
+    # tmp = 0
+    # early_state = None
+    # for count, idx in zip(ecount, ebins):
+    #     if count > tmp and idx != late_state:
+    #         early_state = idx
+    #         tmp = count
 
     return early_state, late_state
 
@@ -1862,3 +1869,112 @@ class CustomHandler(ph.HmmHandler):
 
         #self.plot_saved_models()
         self.load_params()
+
+
+def stratified_shuffle_split(labels, data, repeats, test_label):
+    '''generator to split data by unique labels and sample with replacement
+    from each to generate new groups of same size. 
+    rows of data are observations.
+
+    Returns
+    -------
+    train_data, train_labels, test_data, test_labels
+    '''
+    groups = np.unique(labels)
+    counts = {}
+    datasets = {}
+    for grp in groups:
+        idx = np.where(labels == grp)[0]
+        counts[grp] = idx.shape[0]
+        datasets[grp] = data[idx, :]
+
+    rng = np.random.default_rng()
+    for i in range(repeats):
+        tmp_lbls = []
+        tmp_data = []
+        for grp in groups:
+            N = counts[grp]
+            idx = rng.choice(N, N, replace=True)
+            tmp_data.append(datasets[grp][idx, :])
+            tmp_lbls.extend(np.repeat(grp, N))
+
+        tmp_data = np.vstack(tmp_data)
+        train_idx = np.where(tmp_lbls != test_label)[0]
+        test_idx = np.where(tmp_lbls == test_label)[0]
+        train = tmp_data[train_idx, :]
+        train_lbls = tmp_lbls[train_idx]
+        test = tmp_data[test_idx, :]
+        test_lbls = tmp_lbls[test_idx]
+        yield train, train_lbls, test, test_lbls
+
+
+def run_classifier(train, train_labels, test, test_labels, classifier=stats.NBClassifier):
+    model = classifier(train_labels, train)
+    model.fit()
+    predictions = model.predict(test)
+    accuracy = 100 * sum((x == y for x,y in zip(predictions, test_labels))) / len(test_labels)
+    return accuracy, predictions
+
+
+def saccharin_confusion_analysis(best_hmms, all_units, area='GC',
+                                 single_unit=True, repeats=20):
+    '''create output dataframe with columns: exp_name, time_group, exp_group,
+    cta_group, state_group, ID_confusion, pal_confusion, n_cells, 
+    '''
+    all_units = all_units.query('(area == @area) and (single_unit == @single_unit)')
+    best_hmms = best_hmms.dropna(subset=['hmm_id', 'early_state', 'late_state'])
+    out_keys = ['exp_name', 'exp_group', 'time_group', 'cta_group',
+                'state_group', 'ID_confusion', 'pal_confusion',
+                'pal_counts_nacl', 'pal_counts_ca', 'pal_counts_quinine',
+                'n_cells']
+    template = dict.fromkeys(out_keys)
+    id_cols = ['exp_name', 'exp_group', 'time_group', 'cta_group']
+    state_columns = ['early_state', 'late_state']
+    id_tastes = ['NaCl', 'Quinine', 'Saccharin']
+    pal_tastes = ['NaCl', 'Citric Acid', 'Quinine', 'Saccharin']
+    pal_map = {'NaCl': 3, 'Citric Acid': 2, 'Quinine': 1, 'Saccharin': -1}
+    out = []
+    for name, group in best_hmms.groupby(id_cols):
+        for state_col in state_columns:
+            tmp = template.copy()
+            for k,v in zip(id_cols, name):
+                tmp[k] = v
+
+            tmp['state_group'] = state_col.replace('_state', '')
+
+            if group.taste.isin(id_tastes).sum() != len(id_tastes):
+                continue
+
+            if group.taste.isin(pal_tastes).sum() == len(pal_tastes):
+                run_pal = True
+            else:
+                run_pal = False
+
+            labels, rates, identifiers = get_classifier_data(group, 'taste',
+                                                             state_col, 
+                                                             all_units,
+                                                             remove_baseline=True)
+            tmp['n_cells'] = rates.shape[1]
+            for train, train_lbls, test, test_lbls \
+                    in stratified_shuffle_split(labels, rates, repeats, 'Saccharin'):
+                row = tmp.copy()
+                tst_l = test_lbls.copy()
+                tst_l[:] = 'NaCl'
+                id_acc, _ = run_classifier(train, train_lbls, test, tst_l,
+                                           classifier=stats.NBClassifier)
+                row['ID_confusion'] = id_acc
+                if run_pal:
+                    train_l = np.fromiter(map(pal_map.get, tain_lbls), int)
+                    tst_l = np.fromiter(map(pal_map.get, tst_l), int)
+                    pal_acc, pred = run_classifier(train, train_l, test, tst_l,
+                                                   classifier=stats.LDAClassifier)
+                    row['pal_confusion'] = pal_acc
+                    row['pal_counts_nacl'] = sum(pred == 'NaCl')
+                    row['pal_counts_ca'] = sum(pred == 'Citric Acid')
+                    row['pal_counts_quinine'] = sum(pred == 'Quinine')
+
+                out.append(row)
+
+    return pd.DataFrame(out)
+
+
