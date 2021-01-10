@@ -222,7 +222,7 @@ class LDAClassifier(object):
         self.row_id = row_id
         self.result = None
         self.model = None
-        self.n_components = n_components
+        self.n_components = np.min([n_components, X.shape[1], len(np.unique(y))-1])
 
     def fit(self):
         X = self.X

@@ -1338,7 +1338,7 @@ class HmmAnalysis(object):
             timings = hmma.analyze_hmm_state_timing(best_hmms)
             feather.write_dataframe(timings, timing_file)
 
-        if os.path.isifile(confusion_file) and not overwrite:
+        if os.path.isfile(confusion_file) and not overwrite:
             confusion = feather.read_dataframe(confusion_file)
         else:
             confusion = hmma.saccharin_confusion_analysis(best_hmms, all_units,

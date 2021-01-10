@@ -14,6 +14,7 @@ import analysis_stats as stats
 from tqdm import tqdm
 import pingouin
 from joblib import Parallel, delayed, cpu_count
+from collections import Counter
 
 
 def deduce_state_order(best_paths):
@@ -1898,6 +1899,7 @@ def stratified_shuffle_split(labels, data, repeats, test_label):
             tmp_data.append(datasets[grp][idx, :])
             tmp_lbls.extend(np.repeat(grp, N))
 
+        tmp_lbls = np.array(tmp_lbls)
         tmp_data = np.vstack(tmp_data)
         train_idx = np.where(tmp_lbls != test_label)[0]
         test_idx = np.where(tmp_lbls == test_label)[0]
@@ -1926,7 +1928,7 @@ def saccharin_confusion_analysis(best_hmms, all_units, area='GC',
     out_keys = ['exp_name', 'exp_group', 'time_group', 'cta_group',
                 'state_group', 'ID_confusion', 'pal_confusion',
                 'pal_counts_nacl', 'pal_counts_ca', 'pal_counts_quinine',
-                'n_cells']
+                'n_cells', 'nacl_trials', 'ca_trials', 'quinine_trials', 'sacc_trials']
     template = dict.fromkeys(out_keys)
     id_cols = ['exp_name', 'exp_group', 'time_group', 'cta_group']
     state_columns = ['early_state', 'late_state']
@@ -1950,11 +1952,18 @@ def saccharin_confusion_analysis(best_hmms, all_units, area='GC',
             else:
                 run_pal = False
 
+            group = group[group.taste.isin(pal_tastes)]
+
             labels, rates, identifiers = get_classifier_data(group, 'taste',
-                                                             state_col, 
+                                                             state_col,
                                                              all_units,
                                                              remove_baseline=True)
             tmp['n_cells'] = rates.shape[1]
+            trials = Counter(labels)
+            tmp['nacl_trials'] = trials['NaCl']
+            tmp['ca_trials'] = trials['Citric Acid']
+            tmp['quinine_trials'] = trials['Quinine']
+            tmp['sacc_trials'] = trials['Saccharin']
             for train, train_lbls, test, test_lbls \
                     in stratified_shuffle_split(labels, rates, repeats, 'Saccharin'):
                 row = tmp.copy()
@@ -1964,14 +1973,15 @@ def saccharin_confusion_analysis(best_hmms, all_units, area='GC',
                                            classifier=stats.NBClassifier)
                 row['ID_confusion'] = id_acc
                 if run_pal:
-                    train_l = np.fromiter(map(pal_map.get, tain_lbls), int)
+                    train_l = np.fromiter(map(pal_map.get, train_lbls), int)
                     tst_l = np.fromiter(map(pal_map.get, tst_l), int)
                     pal_acc, pred = run_classifier(train, train_l, test, tst_l,
                                                    classifier=stats.LDAClassifier)
                     row['pal_confusion'] = pal_acc
-                    row['pal_counts_nacl'] = sum(pred == 'NaCl')
-                    row['pal_counts_ca'] = sum(pred == 'Citric Acid')
-                    row['pal_counts_quinine'] = sum(pred == 'Quinine')
+                    counts = Counter(pred)
+                    row['pal_counts_nacl'] = counts[pal_map['NaCl']]
+                    row['pal_counts_ca'] = counts[pal_map['Citric Acid']]
+                    row['pal_counts_quinine'] = counts[pal_map['Quinine']]
 
                 out.append(row)
 
