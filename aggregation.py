@@ -11,6 +11,7 @@ from blechpy.analysis import held_unit_analysis as hua
 from blechpy.analysis import spike_analysis as sas
 from blechpy.dio import h5io
 from blechpy.utils import print_tools as pt
+from collections.abc import Mapping
 
 
 PAL_MAP = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
@@ -369,3 +370,68 @@ def set_electrode_areas(proj, el_in_gc={}):
     return
 
 
+def get_valid_trials(state_seqs, states, min_pts=1, time=None):
+    '''returns the indices of all trials where all of the given states are present and
+    have more than min_pts consecutive points in each state. If time is given,
+    this will only return trials in which the state is present after t=0
+    '''
+    if time is not None:
+        tidx = np.where(time > 0)[0]
+        state_seqs = state_seqs.copy()[:, tidx]
+
+    out = []
+    for i, row in enumerate(state_seqs):
+        if any([x not in row for x in states]):
+            continue
+
+        good = True
+        summary = summarize_sequence(row)
+        for state in states:
+            idx = np.where(summary[:,0] == state)[0]
+            if not any(summary[idx,-1] >= min_pts):
+                good = False
+
+        if good:
+            out.append(i)
+
+    return np.array(out)
+
+
+def summarize_sequence(path):
+    '''takes a 1-D sequences of categorical info and returns a matrix with
+    columns: state, start_idx, end_idx, duration in samples
+    '''
+    tmp_path = path.copy()
+    out = []
+    a = np.where(np.diff(path) != 0)[0]
+    starts = np.insert(a+1,0,0)
+    ends = np.insert(a, len(a), len(path)-1)
+    for st, en in zip(starts, ends):
+        out.append((path[st], st, en, en-st+1))
+
+    return np.array(out)
+
+def write_dict_to_txt(dat, save_file=None, tabs=0):
+    out = []
+    for k,v in dat.items():
+        out.append('\t'*tabs + k)
+        if isinstance(v, Mapping):
+            out.extend(write_dict_to_txt(v, tabs=tabs+1))
+        elif isinstance(v, pd.DataFrame):
+            if isinstance(v.index, pd.core.indexes.range.RangeIndex):
+                index=False
+            else:
+                index=True
+
+            tmp = v.to_string(index=index)
+            tmp = '\t'*tabs + tmp.replace('\n', '\n'+'\t'*tabs)
+            out.append(tmp)
+            out.append('')
+        else:
+            out[-1] = out[-1] + ': ' + str(v)
+
+    if save_file:
+        with open(save_file, 'w') as f:
+            f.write('\n'.join(out))
+    else:
+        return out

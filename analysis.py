@@ -8,6 +8,7 @@ import feather
 import pickle
 import aggregation as agg
 import plotting as plt
+import new_plotting as nplt
 import analysis_stats as stats
 import helper_funcs as hf
 import population_analysis as pop
@@ -1355,6 +1356,44 @@ class HmmAnalysis(object):
 
         return coding, timings, confusion
 
+    def plot_hmm_confusion(self, save_dir=None):
+        if save_dir is None:
+            save_dir = self.save_dir
+
+        coding, timings, confusion = self.analyze_hmms(save_dir=save_dir)
+        confusion['exclude'] = confusion.apply(lambda x: True if
+                                               (x['exp_group'] == 'GFP' and
+                                                x['cta_group'] == 'No CTA')
+                                               else False, axis=1)
+        plot_dir = os.path.join(save_dir, 'confusion_analysis')
+        if os.path.isdir(plot_dir):
+            shutil.rmtree(plot_dir)
+
+        os.mkdir(plot_dir)
+
+        exc_df = confusion[confusion['exclude'] == False]
+
+        # Make confusion plots using exp_group
+        corr_file = os.path.join(plot_dir, 'confusion_correlations.svg')
+        comp_file = os.path.join(plot_dir, 'confusion_comparison.svg')
+        nplt.plot_confusion_correlations(confusion, save_file=corr_file)
+        nplt.plot_confusion_data(confusion, save_file=comp_file, group_col='exp_group')
+
+        # Make confusion plots using exp_group and excluding GFP-NoCTA
+        corr_file = os.path.join(plot_dir, 'confusion_correlations-exclude.svg')
+        comp_file = os.path.join(plot_dir, 'confusion_comparison-exclude.svg')
+        nplt.plot_confusion_correlations(exc_df, save_file=corr_file)
+        nplt.plot_confusion_data(exc_df, save_file=comp_file, group_col='exp_group')
+        
+        # Make confusion plots using cta_group
+        comp_file = os.path.join(plot_dir, 'confusion_comparison-CTA.svg')
+        nplt.plot_confusion_data(confusion, save_file=comp_file, group_col='cta_group')
+
+        # Make confusion plots using cta_group and excluding GFP-NoCTA
+        comp_file = os.path.join(plot_dir, 'confusion_comparison-CTA-exclude.svg')
+        nplt.plot_confusion_data(exc_df, save_file=comp_file, group_col='cta_group')
+
+
     def plot_hmm_coding_and_timing(self, save_dir=None):
         if save_dir is None:
             save_dir = self.save_dir
@@ -1399,7 +1438,8 @@ class HmmAnalysis(object):
 
     def process_fitted_hmms(self, overwrite=False):
         with pm.push_alert(success_msg='HMM Processing Complete! :D'):
-            ho = self.get_hmm_overview(overwrite=overwrite)
+            #ho = self.get_hmm_overview(overwrite=overwrite)
+            ho = self.get_hmm_overview(overwrite=False)
             self.sort_hmms_by_params(overwrite=overwrite)
             self.mark_early_and_late_states()
             sorted_df = self.get_sorted_hmms()
@@ -1421,6 +1461,7 @@ class HmmAnalysis(object):
                 if sum(sorted_df['sorting'] == set_name) > 30:
                     self.analyze_hmms(overwrite=True, save_dir=save_dir)
                     self.plot_hmm_coding_and_timing(save_dir=save_dir)
+                    self.plot_hmm_confusion(save_dir=save_dir)
 
                 plot_dir = os.path.join(save_dir, 'HMM Plots')
                 if os.path.isdir(plot_dir) and overwrite:
@@ -1433,6 +1474,23 @@ class HmmAnalysis(object):
                                       sorting_tag=set_name)
 
         return sorted_df
+
+
+    @pm.push_alert(success_msg='HMM processing complete!')
+    def process_sorted_hmms(self, sorting='params #3', save_dir=None):
+        best_hmms = self.get_best_hmms(overwrite=True, sorting=sorting, save_dir=save_dir)
+        self.analyze_hmms(overwrite=True, save_dir=save_dir)
+        self.plot_hmm_coding_and_timing(save_dir=save_dir)
+        self.plot_hmm_confusion(save_dir=save_dir)
+        plot_dir = os.path.join(save_dir, 'HMM Plots')
+        if os.path.isdir(plot_dir):
+            shutil.rmtree(plot_dir)
+
+        os.mkdir(plot_dir)
+
+        self.plot_sorted_hmms(overwrite=True, save_dir=plot_dir,
+                              sorting_tag=sorting)
+
 
     def plot_hmms_for_comp(self):
         sorted_df = self.get_sorted_hmms()

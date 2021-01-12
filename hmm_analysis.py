@@ -15,6 +15,7 @@ from tqdm import tqdm
 import pingouin
 from joblib import Parallel, delayed, cpu_count
 from collections import Counter
+import aggregation as agg
 
 
 def deduce_state_order(best_paths):
@@ -663,7 +664,8 @@ def write_id_pal_to_text(save_file, group, early_id=None,
 
 ## Helper Functions ##
 
-def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50, remove_baseline=False):
+def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50,
+                           remove_baseline=False, other_state=None):
     '''returns an Trials x Neurons array of firing rates giving the mean firing
     rate of each neuron in the first instance of state in each trial
 
@@ -696,29 +698,35 @@ def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50, remov
     dt = params['dt']
     unit_type = params['unit_type']
     area = params['area']
+    seqs = hmm.stat_arrays['best_sequences']
     if units is not None:
         unit_type = units
 
-    spike_array, dt, s_time = ph.get_hmm_spike_data(rec_dir, unit_type,
-                                                    channel,
-                                                    time_start=t_start,
-                                                    time_end=t_end, dt=dt,
-                                                    trials=n_trials, area=area)
+    spike_array, s_dt, s_time = ph.get_hmm_spike_data(rec_dir, unit_type,
+                                                      channel,
+                                                      time_start=t_start,
+                                                      time_end=t_end, dt=dt,
+                                                      trials=n_trials, area=area)
     if s_time[0] < 0:
         idx = np.where(s_time < 0)[0]
         prestim = spike_array[:,:, idx]
-        prestim = np.sum(prestim, axis=-1) / (dt*len(idx))
+        prestim = np.sum(prestim, axis=-1) / (s_dt*len(idx))
         baseline = np.mean(prestim, axis=0)
     else:
         baseline = 0
+
+
+    # both states must be present for at least 50ms each post-stimulus
+    check_states = [state, other_state] if other_state else [state]
+    valid_trials = agg.get_valid_trials(seqs, check_states, min_pts= 50/(dt*1000), time=time)
 
     # spike_array is trial x neuron x time
     n_trials, n_cells, n_steps = spike_array.shape
     rates = []
     trial_nums = []
-    for trial, (spikes, path) in enumerate(zip(spike_array, hmm.stat_arrays['best_sequences'])):
+    for trial, (spikes, path) in enumerate(zip(spike_array, seqs)):
         # Skip if state is not in trial
-        if not state in path:
+        if trial not in valid_trials:
             continue
 
         # Skip trial if there is only 1 state
@@ -757,7 +765,8 @@ def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50, remov
     return np.array(rates), np.array(trial_nums)
 
 
-def get_classifier_data(group, label_col, state_col, all_units, remove_baseline=False):
+def get_classifier_data(group, label_col, state_col, all_units,
+                        remove_baseline=False, other_state_col=None):
     units = get_common_units(group, all_units)
     if units == {}:
         return None, None, None
@@ -769,10 +778,18 @@ def get_classifier_data(group, label_col, state_col, all_units, remove_baseline=
         rec_dir = row['rec_dir']
         hmm_id = int(row['hmm_id'])
         state = row[state_col]
+        if other_state_col:
+            state2 = row[other_state_col]
+        else:
+            state2 = None
+
         un = units[rec_dir]
         h5_file = get_hmm_h5(rec_dir)
         hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
-        tmp_r, tmp_trials = get_state_firing_rates(rec_dir, hmm_id, state, units=un, remove_baseline=remove_baseline)
+        tmp_r, tmp_trials = get_state_firing_rates(rec_dir, hmm_id, state,
+                                                   units=un,
+                                                   remove_baseline=remove_baseline,
+                                                   other_state=state2)
         tmp_l = np.repeat(row[label_col], tmp_r.shape[0])
         tmp_id = [(rec_dir, hmm_id, row[label_col], x) for x in tmp_trials]
         if len(tmp_r) == 0:
@@ -782,6 +799,10 @@ def get_classifier_data(group, label_col, state_col, all_units, remove_baseline=
         labels.append(tmp_l)
         rates.append(tmp_r)
         identifiers.extend(tmp_id)
+
+    # if no valid trials were found for any taste
+    if len(rates) == 0:
+        return None, None, None
 
     labels = np.concatenate(labels)
     rates = np.vstack(rates)
@@ -1173,9 +1194,11 @@ def analyze_hmm_state_coding(best_hmms, all_units):
         # ID Classification
         if group.taste.isin(id_tastes).sum() == len(id_tastes):
             eia = NB_classifier_accuracy(group[group.taste.isin(id_tastes)],
-                                         'taste', 'early_state', all_units)
+                                         'taste', 'early_state', all_units,
+                                         other_state_col='late_state')
             lia = NB_classifier_accuracy(group[group.taste.isin(id_tastes)],
-                                         'taste', 'late_state', all_units)
+                                         'taste', 'late_state', all_units,
+                                         other_state_col='early_state')
             if eia is not None:
                 tmp['early_ID_acc'] = eia.accuracy
 
@@ -1185,9 +1208,11 @@ def analyze_hmm_state_coding(best_hmms, all_units):
         # Palatability Classification
         if group.taste.isin(pal_tastes).sum() == len(pal_tastes):
             epa = LDA_classifier_accuracy(group[group.taste.isin(pal_tastes)],
-                                          'palatability', 'early_state', all_units)
+                                          'palatability', 'early_state', all_units,
+                                          other_state_col='late_state')
             lpa = LDA_classifier_accuracy(group[group.taste.isin(pal_tastes)],
-                                          'palatability', 'late_state', all_units)
+                                          'palatability', 'late_state', all_units,
+                                          other_state_col='early_state')
             if epa is not None:
                 tmp['early_pal_acc'] = epa.accuracy
 
@@ -1199,27 +1224,37 @@ def analyze_hmm_state_coding(best_hmms, all_units):
             j = group.taste.isin(confusion_tastes)
             eic = NB_classifier_confusion(group[j], 'taste', 'early_state', all_units,
                                           train_labels=confusion_tastes[:-1],
-                                          test_labels=[confusion_tastes[-1]])
+                                          test_labels=[confusion_tastes[-1]],
+                                          other_state_col='late_state')
             lic = NB_classifier_confusion(group[j], 'taste', 'late_state', all_units,
                                           train_labels=confusion_tastes[:-1],
-                                          test_labels=[confusion_tastes[-1]])
+                                          test_labels=[confusion_tastes[-1]],
+                                          other_state_col='early_state')
             # output is a tuple with (n_nacl, n_quinine), that is number of
             # saccharin trials classified as each
             # UPDATE: now just returns % nacl
-            tmp['early_ID_confusion'] = eic
-            tmp['late_ID_confusion'] = lic
+            if eic is not None:
+                tmp['early_ID_confusion'] = eic
+
+            if lic is not None:
+                tmp['late_ID_confusion'] = lic
 
         # Pal Confusion
         if group.taste.isin(confusion_tastes).sum() == len(confusion_tastes):
             j = group.taste.isin(confusion_tastes)
             epc = LDA_classifier_confusion(group[j], 'palatability', 'early_state', all_units,
                                            train_labels=confusion_pal[:-1],
-                                           test_labels=[confusion_pal[-1]])
+                                           test_labels=[confusion_pal[-1]],
+                                           other_state_col='late_state')
             lpc = LDA_classifier_confusion(group[j], 'palatability', 'late_state', all_units,
                                            train_labels=confusion_pal[:-1],
-                                           test_labels=[confusion_pal[-1]])
-            tmp['early_pal_confusion'] = epc
-            tmp['late_pal_confusion'] = lpc
+                                           test_labels=[confusion_pal[-1]],
+                                           other_state_col='early_state')
+            if epc is not None:
+                tmp['early_pal_confusion'] = epc
+
+            if lpc is not None:
+                tmp['late_pal_confusion'] = lpc
 
         # n_cells in 4taste rec (single units in GC, which are used for classfier, not for HMM fitting
         # therefore if HMM fitted with pyrmadial this will use all single units
@@ -1244,7 +1279,7 @@ def analyze_hmm_state_coding(best_hmms, all_units):
     return pd.DataFrame(out)
 
 
-def NB_classifier_accuracy(group, label_col, state_col, all_units):
+def NB_classifier_accuracy(group, label_col, state_col, all_units, other_state_col=None):
     '''uses rec_dir and hmm_id to creating firing rate array (trials x cells)
     label_col is the column used to label trials, state_col is used to identify
     which hmm state to use for classification
@@ -1263,7 +1298,10 @@ def NB_classifier_accuracy(group, label_col, state_col, all_units):
     -------
     float : accuracy [0,1]
     '''
-    labels, rates, identifiers = get_classifier_data(group, label_col, state_col, all_units, remove_baseline=True)
+    labels, rates, identifiers = get_classifier_data(group, label_col,
+                                                     state_col, all_units,
+                                                     remove_baseline=True,
+                                                     other_state_col=other_state_col)
     if labels is None:
         return None
 
@@ -1283,7 +1321,7 @@ def NB_classifier_accuracy(group, label_col, state_col, all_units):
     return results
 
 
-def LDA_classifier_accuracy(group, label_col, state_col, all_units):
+def LDA_classifier_accuracy(group, label_col, state_col, all_units, other_state_col=None):
     '''uses rec_dir and hmm_id to creating firing rate array (trials x cells)
     label_col is the column used to label trials, state_col is used to identify
     which hmm state to use for classification
@@ -1302,7 +1340,10 @@ def LDA_classifier_accuracy(group, label_col, state_col, all_units):
     -------
     float : accuracy [0,1]
     '''
-    labels, rates, identifiers = get_classifier_data(group, label_col, state_col, all_units, remove_baseline=True)
+    labels, rates, identifiers = get_classifier_data(group, label_col,
+                                                     state_col, all_units,
+                                                     remove_baseline=True,
+                                                     other_state_col=other_state_col)
     if labels is None:
         return None
 
@@ -1316,14 +1357,17 @@ def LDA_classifier_accuracy(group, label_col, state_col, all_units):
 
 
 def NB_classifier_confusion(group, label_col, state_col, all_units,
-                            train_labels=None, test_labels=None):
+                            train_labels=None, test_labels=None, other_state_col=None):
     if len(train_labels) != 2:
         raise ValueError('2 training labels are required for confusion calculations')
 
     if len(test_labels) != 1:
         raise ValueError('Too many test labels')
 
-    labels, rates, identifiers = get_classifier_data(group,  label_col, state_col, all_units, remove_baseline=True)
+    labels, rates, identifiers = get_classifier_data(group,  label_col,
+                                                     state_col, all_units,
+                                                     remove_baseline=True,
+                                                     other_state_col=other_state_col)
     if labels is None:
         return None
 
@@ -1333,6 +1377,9 @@ def NB_classifier_confusion(group, label_col, state_col, all_units,
 
     train_idx = np.where([x in train_labels for x in labels])[0]
     test_idx = np.where([x in test_labels for x in labels])[0]
+    if len(train_idx) == 0 or len(test_idx) == 0:
+        return None
+
     model = stats.NBClassifier(labels[train_idx], rates[train_idx, :],
                                row_id=identifiers[train_idx, :])
     model.fit()
@@ -1346,14 +1393,17 @@ def NB_classifier_confusion(group, label_col, state_col, all_units,
 
 
 def LDA_classifier_confusion(group, label_col, state_col, all_units,
-                            train_labels=None, test_labels=None):
+                            train_labels=None, test_labels=None, other_state_col=None):
     if len(train_labels) != 2:
         raise ValueError('2 training labels are required for confusion calculations')
 
     if len(test_labels) != 1:
         raise ValueError('Too many test labels')
 
-    labels, rates, identifiers = get_classifier_data(group,  label_col, state_col, all_units, remove_baseline=True)
+    labels, rates, identifiers = get_classifier_data(group,  label_col,
+                                                     state_col, all_units,
+                                                     remove_baseline=True,
+                                                     other_state_col=other_state_col)
     if labels is None:
         return None
 
@@ -1363,6 +1413,9 @@ def LDA_classifier_confusion(group, label_col, state_col, all_units,
 
     train_idx = np.where([x in train_labels for x in labels])[0]
     test_idx = np.where([x in test_labels for x in labels])[0]
+    if len(train_idx) == 0 or len(test_idx) == 0:
+        return None
+
     model = stats.LDAClassifier(labels[train_idx], rates[train_idx, :],
                                 row_id=identifiers[train_idx, :])
     model.fit()
@@ -1376,8 +1429,10 @@ def LDA_classifier_confusion(group, label_col, state_col, all_units,
     return 100 * counts[0] / np.sum(counts)  ## returns % nacl
 
 
-def choose_early_late_states(hmm, early_window=[150,500], late_window=[750, 1500]):
-    '''picks state that most often appears in the late_window as the late state, and the state that most commonly appears in the early window (excluding the late state) as the early state.
+def choose_early_late_states(hmm, early_window=[200,700], late_window=[750, 1500]):
+    '''picks state that most often appears in the late_window as the late
+    state, and the state that most commonly appears in the early window
+    (excluding the late state) as the early state.
 
     Parameters
     ----------
@@ -1408,7 +1463,7 @@ def choose_early_late_states(hmm, early_window=[150,500], late_window=[750, 1500
     seqs = seqs[good_trials, :]
     n_trials = seqs.shape[0]
 
-    lbins = list(p.arange(1, hmm.n_states))
+    lbins = list(np.arange(1, hmm.n_states))
     ebins = list(np.arange(0, hmm.n_states-1))
     lcount = []
     ecount = []
@@ -1872,6 +1927,7 @@ class CustomHandler(ph.HmmHandler):
         self.load_params()
 
 
+## New confusion Analysis ##
 def stratified_shuffle_split(labels, data, repeats, test_label):
     '''generator to split data by unique labels and sample with replacement
     from each to generate new groups of same size. 
@@ -1932,6 +1988,7 @@ def saccharin_confusion_analysis(best_hmms, all_units, area='GC',
     template = dict.fromkeys(out_keys)
     id_cols = ['exp_name', 'exp_group', 'time_group', 'cta_group']
     state_columns = ['early_state', 'late_state']
+    other_state = {'early_state': 'late_state', 'late_state': 'early_state'}
     id_tastes = ['NaCl', 'Quinine', 'Saccharin']
     pal_tastes = ['NaCl', 'Citric Acid', 'Quinine', 'Saccharin']
     pal_map = {'NaCl': 3, 'Citric Acid': 2, 'Quinine': 1, 'Saccharin': -1}
@@ -1957,9 +2014,14 @@ def saccharin_confusion_analysis(best_hmms, all_units, area='GC',
             labels, rates, identifiers = get_classifier_data(group, 'taste',
                                                              state_col,
                                                              all_units,
-                                                             remove_baseline=True)
-            tmp['n_cells'] = rates.shape[1]
+                                                             remove_baseline=True,
+                                                             other_state_col=other_state[state_col])
             trials = Counter(labels)
+            if rates is None or any([trials[x] < 2 for x in id_tastes]):
+                # if no valid trials were found for NaCl, Quinine or Saccharin
+                continue
+
+            tmp['n_cells'] = rates.shape[1]
             tmp['nacl_trials'] = trials['NaCl']
             tmp['ca_trials'] = trials['Citric Acid']
             tmp['quinine_trials'] = trials['Quinine']

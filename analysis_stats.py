@@ -2,12 +2,13 @@ import numpy as np
 import pandas as pd
 import itertools as it
 from joblib import Parallel, delayed, cpu_count
-from scipy.stats import t, fisher_exact, shapiro, levene, chisquare
+from scipy.stats import t, fisher_exact, shapiro, levene, chisquare, kruskal
 from sklearn.model_selection import LeavePOut
 from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from statsmodels.formula.api import ols
 import statsmodels.api as sm
+import pingouin as pg
 
 
 def dunnetts_post_hoc(X0, X, alpha):
@@ -361,6 +362,21 @@ def test_anova_assumptions(df, dv, between, within):
     return out
 
 
+def kw_and_gh(df, group_col, value_col):
+    df = df.dropna(subset=[group_col, value_col])
+    dat = [group[value_col].values for _, group in df.groupby(group_col)]
+    ks_stat, ks_p = kruskal(*dat)
+    try:
+        gameshowell_df = pg.pairwise_gameshowell(data=df, dv=value_col, between=group_col).round(4)
+        def apply_rejection(pval):
+            if pval <= 0.05:
+                return True
+            else:
+                return False
 
+        gameshowell_df['reject'] = gameshowell_df['pval'].apply(apply_rejection)
+    except Exception as ex:
+        gameshowell_df = None
+        print(ex.__traceback__)
 
-
+    return ks_stat, ks_p, gameshowell_df

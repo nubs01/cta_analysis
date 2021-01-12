@@ -27,7 +27,8 @@ EXP_COLORS = {'Cre': 'tab:blue', 'GFP': 'tab:green'}
 ORDERS = {'exp_group': ['GFP', 'Cre'],
           'cta_group': ['CTA', 'No CTA'],
           'taste': ['Water', 'NaCl', 'Citric Acid', 'Quinine', 'Saccharin'],
-          'time_group': ['preCTA', 'postCTA']}
+          'time_group': ['preCTA', 'postCTA'],
+          'state_group': ['early', 'late']}
 
 def plot_unit_waveforms(rec_dir, unit, ax=None, save_file=None):
     if ax is None:
@@ -1132,7 +1133,7 @@ def add_suplabels(fig, title, xlabel, ylabel):
     ax.spines['right'].set_color('none')
     ax.tick_params(labelcolor='w', top=False, bottom=False, left=False, right=False)
     ax.set_xlabel(xlabel, labelpad=10)
-    ax.set_ylabel(ylabel, labelpad=10)
+    ax.set_ylabel(ylabel, labelpad=40)
     ax.set_title(title, pad=40)
     return ax
 
@@ -1311,10 +1312,10 @@ def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None):
             # Only include trials where both early and late states are present
             min_pts = int(50 / (1000*params['dt']))
             es, ls = row[['early_state', 'late_state']]
-            # e_trials = get_valid_trials(seqs, row['early_state'], min_pts=min_pts, time=time)
-            # l_trials = get_valid_trials(seqs, row['late_state'], min_pts=min_pts, time=time)
+            # e_trials = agg.get_valid_trials(seqs, row['early_state'], min_pts=min_pts, time=time)
+            # l_trials = agg.get_valid_trials(seqs, row['late_state'], min_pts=min_pts, time=time)
             # valid_trials = np.intersect1d(e_trials, l_trials)
-            valid_trials = get_valid_trials(seqs, [es, ls], min_pts=min_pts, time=time)
+            valid_trials = agg.get_valid_trials(seqs, [es, ls], min_pts=min_pts, time=time)
             if len(valid_trials) == 0:
                 print('No valid trials found for %s %s %s' % (row['exp_name'], row['rec_group'], tst))
                 continue
@@ -1911,11 +1912,11 @@ def plot_median_gamma_probs(best_hmms, save_file=None):
 
             # Drop any trials where the state in question is not present in the
             # decoded sequence, or the duration of the state is less than 50ms
-            valid_trials = get_valid_trials(state_seqs, [es, ls],
+            valid_trials = agg.get_valid_trials(state_seqs, [es, ls],
                                             min_pts=int(.05/params['dt']),
                                             time=t)
-            # e_trials = get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
-            # l_trials = get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
+            # e_trials = agg.get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
+            # l_trials = agg.get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
             # Only plot trials where both states are present
             #valid_trials = np.intersect1d(e_trials, l_trials)
             if len(valid_trials) == 0:
@@ -2002,11 +2003,11 @@ def plot_mean_gamma_probs(best_hmms, save_file=None):
 
             # Drop any trials where the state in question is not present in the
             # decoded sequence, or the duration of the state is less than 50ms
-            valid_trials =  get_valid_trials(state_seqs, [es, ls],
+            valid_trials =  agg.get_valid_trials(state_seqs, [es, ls],
                                              min_pts=int(.05/params['dt']),
                                              time=t)
-            #e_trials = get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
-            #l_trials = get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
+            #e_trials = agg.get_valid_trials(state_seqs, es, min_pts=int(.05/params['dt']), time=t)
+            #l_trials = agg.get_valid_trials(state_seqs, ls, min_pts=int(.05/params['dt']), time=t)
             if len(valid_trials) == 0:
                 print(f'No valid trials for {anim} - {rec_group} - {taste}')
                 continue
@@ -2116,87 +2117,3 @@ def plot_state_timing_comparison(df, group_col='exp_group', taste='Saccharin'):
     hue_order = ORDERS['time_group']
     groups = df[group_col].unique()
     group_order = [x for x in ORDERS[group_col] if x in groups]
-
-
-def plot_box_and_paired_points(df, x, y, hue, order=None, hue_order=None,
-                               subjects=None, estimator=np.mean, **kwargs):
-    groups = df[x].unique()
-    hues = df[hue].unique()
-    if order is None:
-        order = groups
-
-    if hue_order is None:
-        hue_order = hues
-
-    # early state end time
-    ax = sns.boxplot(data=df, x=x, hue=hue, y=y, order=order,
-                     hue_order=hue_order, **kwargs)
-
-    xpts = []
-    for l in g.lines:
-        x1, x2 = l.get_xdata()
-        if x1 == x2 and x1 not in xpts:
-            xpts.append(x1)
-
-    plot_pts = []
-    xmap = {}
-    for (g, h), xp in zip(it.product(order, hue_order), xpts):
-        xmap[(g,h)] = xp
-
-    for subj, grp in df.groupby(subjects):
-        for g in grp[x].unique():
-            xvals = []
-            yvals = []
-            yerr = []
-            for h in hue_order:
-                if h not in grp[hue]:
-                    continue
-
-                tmp = grp[(grp[hue] == h) & (grp[x] == g)]
-                yvals.append(estimator(tmp[y]))
-                xvals.append(xmap[(g, h)])
-                yerr.append(error_func(tmp[y]))
-
-            ax.errorbar(xvals, yvals, yerr=yerr, alpha=0.6, marker='.', markersize=10)
-
-
-def get_valid_trials(state_seqs, states, min_pts=1, time=None):
-    '''returns the indices of all trials where all of the given states are present and
-    have more than min_pts consecutive points in each state. If time is given,
-    this will only return trials in which the state is present after t=0
-    '''
-    if time is not None:
-        tidx = np.where(time > 0)[0]
-        state_seqs = state_seqs.copy()[:, tidx]
-
-    out = []
-    for i, row in enumerate(state_seqs):
-        if any([x not in row for x in states]):
-            continue
-
-        good = True
-        summary = summarize_sequence(row)
-        for state in states:
-            idx = np.where(summary[:,0] == state)[0]
-            if not any(summary[idx,-1] >= min_pts):
-                good = False
-
-        if good:
-            out.append(i)
-
-    return np.array(out)
-
-
-def summarize_sequence(path):
-    '''takes a 1-D sequences of categorical info and returns a matrix with
-    columns: state, start_idx, end_idx, duration in samples
-    '''
-    tmp_path = path.copy()
-    out = []
-    a = np.where(np.diff(path) != 0)[0]
-    starts = np.insert(a+1,0,0)
-    ends = np.insert(a, len(a), len(path)-1)
-    for st, en in zip(starts, ends):
-        out.append((path[st], st, en, en-st+1))
-
-    return np.array(out)
