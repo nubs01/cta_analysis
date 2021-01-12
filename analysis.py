@@ -1356,11 +1356,46 @@ class HmmAnalysis(object):
 
         return coding, timings, confusion
 
+    def plot_hmm_timing(self, save_dir=None):
+        if save_dir is None:
+            save_dir = self.save_dir
+
+        _, timing, _ = self.analyze_hmms(save_dir=save_dir)
+        df = timing.copy()
+        df['exclude'] = df.apply(lambda x: True if
+                                 (x['exp_group'] == 'GFP' and
+                                  x['cta_group'] == 'No CTA')
+                                 else False, axis=1)
+
+        plot_dir = os.path.join(save_dir, 'timing_analysis')
+        if os.path.isdir(plot_dir):
+            shutil.rmtree(plot_dir)
+
+        os.mkdir(plot_dir)
+        for taste, grp in df.groupby('taste'):
+            exc_df = grp[grp['exclude'] == False]
+            # exp_group
+            comp_file = os.path.join(plot_dir, f'{taste}_timing_comparison.svg')
+            nplt.plot_timing_data(grp, save_file=comp_file, group_col='exp_group')
+
+            # exp_group excluding GFP-NoCTA
+            comp_file = os.path.join(plot_dir, f'{taste}_timing_comparison-exclude.svg')
+            nplt.plot_timing_data(exc_df, save_file=comp_file, group_col='exp_group')
+
+            # cta_group
+            comp_file = os.path.join(plot_dir, f'{taste}_timing_comparison-CTA.svg')
+            nplt.plot_timing_data(grp, save_file=comp_file, group_col='cta_group')
+
+            # cta_group excluding GFP-NoCTA
+            comp_file = os.path.join(plot_dir, f'{taste}_timing_comparison-CTA-exclude.svg')
+            nplt.plot_timing_data(exc_df, save_file=comp_file, group_col='cta_group')
+
+
     def plot_hmm_confusion(self, save_dir=None):
         if save_dir is None:
             save_dir = self.save_dir
 
-        coding, timings, confusion = self.analyze_hmms(save_dir=save_dir)
+        _, _, confusion = self.analyze_hmms(save_dir=save_dir)
         confusion['exclude'] = confusion.apply(lambda x: True if
                                                (x['exp_group'] == 'GFP' and
                                                 x['cta_group'] == 'No CTA')
@@ -1462,6 +1497,7 @@ class HmmAnalysis(object):
                     self.analyze_hmms(overwrite=True, save_dir=save_dir)
                     self.plot_hmm_coding_and_timing(save_dir=save_dir)
                     self.plot_hmm_confusion(save_dir=save_dir)
+                    self.plot_hmm_timing(save_dir=save_dir)
 
                 plot_dir = os.path.join(save_dir, 'HMM Plots')
                 if os.path.isdir(plot_dir) and overwrite:
@@ -1477,19 +1513,23 @@ class HmmAnalysis(object):
 
 
     @pm.push_alert(success_msg='HMM processing complete!')
-    def process_sorted_hmms(self, sorting='params #3', save_dir=None):
-        best_hmms = self.get_best_hmms(overwrite=True, sorting=sorting, save_dir=save_dir)
-        self.analyze_hmms(overwrite=True, save_dir=save_dir)
-        self.plot_hmm_coding_and_timing(save_dir=save_dir)
+    def process_sorted_hmms(self, sorting='params #3', save_dir=None, overwrite=False):
+        if save_dir is None:
+            save_dir = self.save_dir
+
+        best_hmms = self.get_best_hmms(overwrite=overwrite, sorting=sorting, save_dir=save_dir)
+        self.analyze_hmms(overwrite=overwrite, save_dir=save_dir)
+        #self.plot_hmm_coding_and_timing(save_dir=save_dir)
         self.plot_hmm_confusion(save_dir=save_dir)
-        plot_dir = os.path.join(save_dir, 'HMM Plots')
-        if os.path.isdir(plot_dir):
-            shutil.rmtree(plot_dir)
+        self.plot_hmm_timing(save_dir=save_dir)
+        # plot_dir = os.path.join(save_dir, 'HMM Plots')
+        # if os.path.isdir(plot_dir):
+        #     shutil.rmtree(plot_dir)
 
-        os.mkdir(plot_dir)
+        # os.mkdir(plot_dir)
 
-        self.plot_sorted_hmms(overwrite=True, save_dir=plot_dir,
-                              sorting_tag=sorting)
+        # self.plot_sorted_hmms(overwrite=True, save_dir=plot_dir,
+        #                       sorting_tag=sorting)
 
 
     def plot_hmms_for_comp(self):

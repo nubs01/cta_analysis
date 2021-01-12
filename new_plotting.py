@@ -1,4 +1,5 @@
-#import aggregation as agg
+import aggregation as agg
+import os
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -40,7 +41,9 @@ def plot_confusion_correlations(df, save_file=None):
         plt.close(fig)
 
 
-def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar'):
+def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
+                        plot_points=False):
+    df = df.copy()
     # Make extra column for composite grouping
     df['grouping'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
 
@@ -54,7 +57,6 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar'):
     for g,h in it.product(group_order, hue_order):
         cond_order.append('%s_%s' % (g,h))
 
-    print(cond_order)
     fig = plt.figure(figsize=(14,10))
     outer_ax = add_suplabels(fig, 'Bootstrapped Confusion Analysis', '', '% '
                              'Sacc trials classified as NaCl')
@@ -80,13 +82,15 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar'):
                                         'time_group', order=group_order,
                                         hue_order=hue_order,
                                         subjects='exp_name',
-                                        ax=id_ax, kind=kind)
+                                        ax=id_ax, kind=kind,
+                                        plot_points=plot_points)
 
         g2 = plot_box_and_paired_points(grp, group_col, 'pal_confusion',
                                         'time_group', order=group_order,
                                         hue_order=hue_order,
                                         subjects='exp_name',
-                                        ax=pal_ax, kind=kind)
+                                        ax=pal_ax, kind=kind,
+                                        plot_points=plot_points)
 
         g1.axhline(50, linestyle='--', alpha=0.5, color='k')
         g2.axhline(33.3, linestyle='--', alpha=0.5, color='k')
@@ -110,7 +114,69 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar'):
         g2_y = plot_sig_stars(g2, pal_gh_df, cond_order)
 
     if save_file:
-        fn, ext = os.path.splittext(save_file)
+        fn, ext = os.path.splitext(save_file)
+        fn2 = fn + '.txt'
+        fig.savefig(save_file)
+        plt.close(fig)
+        agg.write_dict_to_txt(statistics, save_file=fn2)
+    else:
+        return fig, axes, statistics
+
+
+def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot_points=False):
+    assert len(df.taste.unique()) == 1, 'Please run one taste at a time'
+    df = df.copy().dropna(subset=[group_col, 'state_group', 'time_group',
+                                  't_start', 't_end'])
+
+    # Make extra column for composite grouping
+    df['grouping'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
+
+    taste = df['taste'].unique()[0]
+    states = df['state_group'].unique()
+    groups = df[group_col].unique()
+    hues = df['time_group'].unique()
+    group_order = ORDERS[group_col]
+    hue_order = ORDERS['time_group']
+    state_order = ORDERS['state_group']
+    cond_order = []
+    for g,h in it.product(group_order, hue_order):
+        cond_order.append('%s_%s' % (g,h))
+
+    fig = plt.figure(figsize=(11,7))
+    outer_ax = add_suplabels(fig, f'{taste} HMM Timing Analysis', '',
+                             'transition time (ms)')
+    plot_grps = [('early', 't_end'), ('late', 't_start')]
+    titles = {'t_end': 'End Times', 't_start': 'Start Times'}
+    axes = np.array([fig.add_subplot(1, len(plot_grps), i+1)
+                     for i in range(len(plot_grps))])
+    statistics = {}
+    for (sg, vg), ax in zip(plot_grps, axes):
+        grp = df.query('state_group == @sg')
+        kw_stat, kw_p, gh_df = stats.kw_and_gh(grp, 'grouping', vg)
+        summary = grp.groupby(['exp_group', 'time_group'])[vg].describe()
+        statistics[sg] = {titles[vg]: {'kw_stat': kw_stat, 'kw_p': kw_p,
+                                          'posthoc': gh_df, 'summary': summary}}
+
+        g1 = plot_box_and_paired_points(grp, group_col, vg,
+                                        'time_group', order=group_order,
+                                        hue_order=hue_order,
+                                        subjects='exp_name',
+                                        ax=ax, kind=kind,
+                                        plot_points=plot_points)
+
+        g1.set_ylabel('')
+        g1.set_xlabel('')
+        g1.set_title('%s %s' %(sg, titles[vg]))
+
+        if ax.is_last_col():
+            g1.legend(bbox_to_anchor=[1.2,0.8,0,0])
+        else:
+            g1.legend_.remove()
+
+        g1_y = plot_sig_stars(g1, gh_df, cond_order)
+
+    if save_file:
+        fn, ext = os.path.splitext(save_file)
         fn2 = fn + '.txt'
         fig.savefig(save_file)
         plt.close(fig)
@@ -121,7 +187,7 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar'):
 
 def plot_box_and_paired_points(df, x, y, hue, order=None, hue_order=None,
                                subjects=None, estimator=np.mean,
-                               error_func=sem, kind='box', **kwargs):
+                               error_func=sem, kind='box', plot_points=True, **kwargs):
     groups = df[x].unique()
     hues = df[hue].unique()
     if order is None:
@@ -142,6 +208,9 @@ def plot_box_and_paired_points(df, x, y, hue, order=None, hue_order=None,
                             hue_order=hue_order, **kwargs)
     else:
         raise ValueError('kind must be bar or box or violin')
+
+    if not plot_points:
+        return ax
 
     xpts = []
     for p in ax.patches:
@@ -196,7 +265,6 @@ def plot_sig_stars(ax, posthoc_df, cond_order):
     xpts = [xpts[i] for i in idx]
     ypts = [ypts[i] for i in idx]
     pts = {cond: (x,y) for cond,x,y in zip(cond_order, xpts, ypts)}
-    print(pts)
     slines = [] # x1, x2, y1, y2
     sdists = []
     max_y = 0
@@ -215,8 +283,8 @@ def plot_sig_stars(ax, posthoc_df, cond_order):
 
         x1, y1 = pts[g1]
         x2, y2 = pts[g2]
-        y1 += 10
-        y2 += 10
+        y1 = 1.2*y1
+        y2 = 1.2*y2
         dist = abs(x2-x1)
         sdists.append(dist)
         slines.append((x1, x2, y1, y2, ss))
@@ -229,13 +297,13 @@ def plot_sig_stars(ax, posthoc_df, cond_order):
     sdists = np.array(sdists)
     idx = list(np.argsort(sdists))
     idx.reverse()
-    ytop = max_y + 5*len(truedf) + 10
+    ytop = max_y + 8*len(truedf)
     maxy = ytop
     for i in idx:
         x1, x2, y1, y2, ss = slines[i]
         mid = (x1 + x2)/2
         ax.plot([x1, x1, x2, x2], [y1, ytop, ytop, y2], linewidth=1, color='k')
         ax.text(mid, ytop, ss, horizontalalignment='center', fontsize=14, fontweight='bold')
-        ytop -= 5
+        ytop -= 8
 
     return maxy+5
