@@ -1428,6 +1428,42 @@ class HmmAnalysis(object):
         comp_file = os.path.join(plot_dir, 'confusion_comparison-CTA-exclude.svg')
         nplt.plot_confusion_data(exc_df, save_file=comp_file, group_col='cta_group')
 
+    def plot_hmm_coding(self, save_dir=None):
+        if save_dir is None:
+            save_dir = self.save_dir
+
+        coding, _, _ = self.analyze_hmms(save_dir=save_dir)
+        coding['exclude'] = coding.apply(lambda x: True if
+                                         (x['exp_group'] == 'GFP' and
+                                          x['cta_group'] == 'No CTA')
+                                         else False, axis=1)
+        plot_dir = os.path.join(save_dir, 'coding_analysis')
+        if os.path.isdir(plot_dir):
+            shutil.rmtree(plot_dir)
+
+        os.mkdir(plot_dir)
+
+        exc_df = coding[coding['exclude'] == False]
+
+        # Make coding plots using exp_group
+        corr_file = os.path.join(plot_dir, 'coding_correlations.svg')
+        comp_file = os.path.join(plot_dir, 'coding_comparison.svg')
+        nplt.plot_coding_correlations(coding, save_file=corr_file)
+        nplt.plot_coding_data(coding, save_file=comp_file, group_col='exp_group')
+
+        # Make coding plots using exp_group and excluding GFP-NoCTA
+        corr_file = os.path.join(plot_dir, 'coding_correlations-exclude.svg')
+        comp_file = os.path.join(plot_dir, 'coding_comparison-exclude.svg')
+        nplt.plot_coding_correlations(exc_df, save_file=corr_file)
+        nplt.plot_coding_data(exc_df, save_file=comp_file, group_col='exp_group')
+        
+        # Make coding plots using cta_group
+        comp_file = os.path.join(plot_dir, 'coding_comparison-CTA.svg')
+        nplt.plot_coding_data(coding, save_file=comp_file, group_col='cta_group')
+
+        # Make coding plots using cta_group and excluding GFP-NoCTA
+        comp_file = os.path.join(plot_dir, 'coding_comparison-CTA-exclude.svg')
+        nplt.plot_coding_data(exc_df, save_file=comp_file, group_col='cta_group')
 
     def plot_hmm_coding_and_timing(self, save_dir=None):
         if save_dir is None:
@@ -1496,6 +1532,7 @@ class HmmAnalysis(object):
                 if sum(sorted_df['sorting'] == set_name) > 30:
                     self.analyze_hmms(overwrite=True, save_dir=save_dir)
                     self.plot_hmm_coding_and_timing(save_dir=save_dir)
+                    self.plot_hmm_coding(save_dir=save_dir)
                     self.plot_hmm_confusion(save_dir=save_dir)
                     self.plot_hmm_timing(save_dir=save_dir)
 
@@ -1520,6 +1557,7 @@ class HmmAnalysis(object):
         best_hmms = self.get_best_hmms(overwrite=overwrite, sorting=sorting, save_dir=save_dir)
         self.analyze_hmms(overwrite=overwrite, save_dir=save_dir)
         #self.plot_hmm_coding_and_timing(save_dir=save_dir)
+        self.plot_hmm_coding(save_dir=save_dir)
         self.plot_hmm_confusion(save_dir=save_dir)
         self.plot_hmm_timing(save_dir=save_dir)
         # plot_dir = os.path.join(save_dir, 'HMM Plots')

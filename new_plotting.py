@@ -17,7 +17,7 @@ def plot_confusion_correlations(df, save_file=None):
                        'quinine_trials', 'sacc_trials']
 
     # Actually just convert string cols to numbers and look at correlation matrix
-    convert_vars = ['exp_group', 'time_group', 'cta_group', 'state_group']
+    convert_vars = ['exp_name', 'exp_group', 'time_group', 'cta_group', 'state_group']
     df2 = df.copy()
     for col in convert_vars:
         grps = df[col].unique()
@@ -40,6 +40,37 @@ def plot_confusion_correlations(df, save_file=None):
         fig.savefig(save_file)
         plt.close(fig)
 
+
+def plot_coding_correlations(df, save_file=None):
+    """look at ID and pal confusion vs n_cells and # of trials or each tastant"""
+    df = fix_coding_df(df)
+    data_cols = ['id_acc', 'pal_acc']
+    comparison_vars = ['n_cells', 'n_held_cells']
+
+    # Actually just convert string cols to numbers and look at correlation matrix
+    convert_vars = ['exp_name', 'exp_group', 'time_group', 'cta_group',
+                    'state_group']
+    df2 = df.copy()
+    for col in convert_vars:
+        grps = df[col].unique()
+        mapping = {x:i for i,x in enumerate(grps)}
+        df2[col] = df[col].map(mapping)
+
+    df2 = df2[[*convert_vars, *data_cols, *comparison_vars]]
+
+    fig, ax = plt.subplots(1,1,figsize=(9,8))
+    cbar_ax = fig.add_axes([.9, 0.1, .05, .7])
+    g = sns.heatmap(df2.corr(), annot=True, vmin=-1, vmax=1, center=0,
+                    square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
+    fig.set_size_inches(12,8)
+    g.set_title('Confusion Correlation Matrix', pad=20)
+    cbar_ax.set_position([0.75, 0.20, 0.04, .71])
+    plt.tight_layout()
+    if save_file is None:
+        return fig, ax
+    else:
+        fig.savefig(save_file)
+        plt.close(fig)
 
 def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
                         plot_points=False):
@@ -184,6 +215,110 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
     else:
         return fig, axes, statistics
 
+
+def fix_coding_df(df):
+    # Melt df to get state_group column
+    id_cols = ['exp_name', 'exp_group', 'time_group', 'cta_group']
+    other_cols = ['n_cells', 'n_held_cells']
+    data_cols = {'id_acc': ('early_ID_acc', 'late_ID_acc'),
+                 'pal_acc': ('early_pal_acc', 'late_pal_acc')}
+    df2 = None
+    for k,v in data_cols.items():
+        tmp = df.melt(id_vars=[*id_cols, *other_cols],
+                      value_vars=v,
+                      var_name='state_group', value_name=k)
+        tmp['state_group'] = tmp['state_group'].apply(lambda x: x.split('_')[0])
+        if df2 is None:
+            df2 = tmp
+        else:
+            df2 = pd.merge(df2, tmp, on=[*id_cols, *other_cols, 'state_group'],
+                           validate='1:1')
+
+    # NaN in n_cells, means not enough cells were present to fit hmms (<3)
+    df = df2.dropna().copy()
+    return df
+
+
+def plot_coding_data(df, save_file=None, group_col='exp_group',
+                     plot_points=False, kind='bar'):
+    df = fix_coding_df(df)
+    # Make extra column for composite grouping
+    df['grouping'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
+
+    states = df['state_group'].unique()
+    groups = df[group_col].unique()
+    hues = df['time_group'].unique()
+    group_order = ORDERS[group_col]
+    hue_order = ORDERS['time_group']
+    state_order = ORDERS['state_group']
+    cond_order = []
+    for g,h in it.product(group_order, hue_order):
+        cond_order.append('%s_%s' % (g,h))
+
+    fig = plt.figure(figsize=(14,10))
+    outer_ax = add_suplabels(fig, 'HMM Coding Analysis', '', 'Classification Accuracy (%)')
+    nrows = len(states)
+    ncols = 2
+    axes = np.array([[fig.add_subplot(nrows, ncols, j + ncols*i + 1)
+                      for j in range(ncols)] for i in range(nrows)]) 
+    axes[0,0].get_shared_y_axes().join(axes[0,0], axes[1,0])
+    axes[0,0].get_shared_y_axes().join(axes[0,0], axes[0,1])
+    axes[0,1].get_shared_y_axes().join(axes[0,1], axes[1,1])
+    statistics = {}
+    for sg, (id_ax, pal_ax) in zip(state_order, axes):
+        grp = df.query('state_group == @sg')
+        id_kw_stat, id_kw_p, id_gh_df = stats.kw_and_gh(grp, 'grouping', 'id_acc')
+        pal_kw_stat, pal_kw_p, pal_gh_df = stats.kw_and_gh(grp, 'grouping', 'pal_acc')
+        id_sum = grp.groupby(['exp_group', 'time_group'])['id_acc'].describe()
+        pal_sum = grp.groupby(['exp_group', 'time_group'])['pal_acc'].describe()
+        statistics[sg] = {'id': {'kw_stat': id_kw_stat, 'kw_p': id_kw_p,
+                                 'posthoc': id_gh_df, 'summary': id_sum},
+                          'pal': {'kw_stat': pal_kw_stat, 'kw_p': pal_kw_p,
+                                  'posthoc': pal_gh_df, 'summary': pal_sum}}
+
+        g1 = plot_box_and_paired_points(grp, group_col, 'id_acc',
+                                        'time_group', order=group_order,
+                                        hue_order=hue_order,
+                                        subjects='exp_name',
+                                        ax=id_ax, kind=kind,
+                                        plot_points=plot_points)
+
+        g2 = plot_box_and_paired_points(grp, group_col, 'pal_acc',
+                                        'time_group', order=group_order,
+                                        hue_order=hue_order,
+                                        subjects='exp_name',
+                                        ax=pal_ax, kind=kind,
+                                        plot_points=plot_points)
+
+        g1.axhline(100/3, linestyle='--', alpha=0.5, color='k')
+        g2.axhline(100/3, linestyle='--', alpha=0.5, color='k')
+
+        g1.set_ylabel(sg.replace('_', ' '))
+        g1.legend_.remove()
+        g1.set_xlabel('')
+        g2.set_xlabel('')
+        g2.set_ylabel('')
+        if id_ax.is_first_row():
+            g1.set_title('ID Coding Accuracy')
+            g2.set_title('Pal Coding Accuracy')
+
+
+        if not pal_ax.is_last_row():
+            g2.legend_.remove()
+        else:
+            g2.legend(bbox_to_anchor=[1.2,1.2,0,0])
+
+        g1_y = plot_sig_stars(g1, id_gh_df, cond_order)
+        g2_y = plot_sig_stars(g2, pal_gh_df, cond_order)
+
+    if save_file:
+        fn, ext = os.path.splitext(save_file)
+        fn2 = fn + '.txt'
+        fig.savefig(save_file)
+        plt.close(fig)
+        agg.write_dict_to_txt(statistics, save_file=fn2)
+    else:
+        return fig, axes, statistics
 
 def plot_box_and_paired_points(df, x, y, hue, order=None, hue_order=None,
                                subjects=None, estimator=np.mean,

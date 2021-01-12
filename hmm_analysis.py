@@ -941,7 +941,7 @@ def is_state_in_seq(seq, state, min_pts=1, time=None):
 ## HMM Organization/Sorting ##
 
 def make_necessary_hmm_list(all_units, min_cells=3, area='GC'):
-    df = all_units.query('single_unit == True & area == @area')
+    df = all_units.query('single_unit == True and area == @area')
     id_cols = ['rec_dir', 'exp_name', 'exp_group', 'rec_group', 'time_group', 'cta_group']
     out = []
     for name, group in df.groupby(id_cols):
@@ -1172,7 +1172,7 @@ def analyze_hmm_state_coding(best_hmms, all_units):
     late_pal_confusion
     '''
     # TODO: Remove unit hard-coding
-    all_units = all_units.query('(area == "GC") and (single_unit == True)')
+    all_units = all_units.query('area == "GC" and single_unit == True')
 
     best_hmms = best_hmms.dropna(subset=['hmm_id', 'early_state', 'late_state'])
     out_keys = ['exp_name', 'exp_group', 'time_group', 'cta_group',
@@ -1261,6 +1261,7 @@ def analyze_hmm_state_coding(best_hmms, all_units):
         rec_dirs = group.rec_dir.unique()
         rd = [x for x in rec_dirs if '4taste' in x]
         if len(rd) != 0:
+            rd = rd[0]
             tmp_units = all_units.query('rec_dir == @rd')
             n_cells = len(tmp_units)
             tmp['n_cells'] = n_cells
