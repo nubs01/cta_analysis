@@ -72,10 +72,14 @@ def chi2_with_posthoc(df, alpha=0.05, group_col='exp_group', taste='Saccharin',
     df = df[df['taste'] == taste]
     tmp_df = df.groupby([group_col, 'time_bin'])['n_diff'].sum().reset_index()
     table1 = tmp_df.pivot(index=group_col, columns='time_bin', values='n_diff')
+    bin_order = sorted(table1.columns, key=lambda x:float(x.split(' - ')[0]))
+    table1 = table1[bin_order]
     stat_all, p_all = chisquare(table1.loc[exp_group], f_exp=table1.loc[ctrl_group])
     tmp_df = df.groupby([group_col, 'time_bin'])['n_same'].sum().reset_index()
     table2 = tmp_df.pivot(index=group_col, columns='time_bin', values='n_same')
+    table2 = table2[bin_order]
     percent_diff = 100*table1 / (table1+table2)
+    percent_diff = percent_diff[bin_order]
 
     # Now go through each time and look at the 2x2 contingency tables
     out_data = []
@@ -377,6 +381,7 @@ def kw_and_gh(df, group_col, value_col):
         gameshowell_df['reject'] = gameshowell_df['pval'].apply(apply_rejection)
     except Exception as ex:
         gameshowell_df = None
-        print(ex.__traceback__)
+        print(f'kruskal wallis p: {ks_p}, games-howell failed')
+        print(ex)
 
     return ks_stat, ks_p, gameshowell_df

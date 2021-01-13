@@ -60,6 +60,9 @@ def compare_response_changes(df, taste, plot_dir, stat_dir, file_prefix,
     plot_fn = os.path.join(plot_dir, f'{file_prefix}.svg')
     plot_held_percent_changed_new(df, group_col=group_col, taste=taste,
                                   posthoc_df=ph_df, save_file=plot_fn)
+    n_sig = n_sig.to_string()
+    percent_diff = percent_diff.to_string()
+    ph_df = ph_df.to_string()
     with open(stat_fn, 'w') as f:
         f.write(f'{taste} Held Unit Responses Changed\n')
         f.write('-'*80 + '\n\n')
@@ -67,9 +70,9 @@ def compare_response_changes(df, taste, plot_dir, stat_dir, file_prefix,
         f.write(f'Percent significantly different units:\n{percent_diff}\n\n')
         f.write('Chi-squared Test on number of significantly different units\n')
         f.write(f'Statistic: {stat_all}, p-value: {p_all}\n')
-        f.write(f'Post-hoc comparisons:\n{ph_df}\n\nContingency Tables:')
+        f.write(f'Post-hoc comparisons:\n{ph_df}\n\nContingency Tables:\n')
         for k,v in tables.items():
-            f.write(f'{k}:\n{v}')
+            f.write(f'{k}:\n{v}\n')
 
 
 def plot_held_percent_changed_new(df, group_col='exp_group', taste='Saccharin',

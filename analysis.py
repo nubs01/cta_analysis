@@ -283,7 +283,8 @@ class ProjectAnalysis(object):
             return data
 
     def make_aggregate_held_unit_plots(self):
-        save_dir = os.path.join(self.root_dir, 'single_unit_analysis', 'held_unit_response_changes')
+        save_dir = os.path.join(self.root_dir, 'single_unit_analysis',
+                                'held_unit_response_changes')
         save_file = os.path.join(save_dir, 'response_change_data.npz')
         params_file = os.path.join(save_dir, 'analysis_params.json')
 
@@ -1564,7 +1565,7 @@ class HmmAnalysis(object):
 
         best_hmms = self.get_best_hmms(overwrite=overwrite, sorting=sorting, save_dir=save_dir)
         self.analyze_hmms(overwrite=overwrite, save_dir=save_dir)
-        #self.plot_hmm_coding_and_timing(save_dir=save_dir)
+        self.plot_hmm_coding_and_timing(save_dir=save_dir)
         self.plot_hmm_coding(save_dir=save_dir)
         self.plot_hmm_confusion(save_dir=save_dir)
         self.plot_hmm_timing(save_dir=save_dir)
