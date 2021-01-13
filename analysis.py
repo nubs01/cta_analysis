@@ -1374,9 +1374,9 @@ class HmmAnalysis(object):
         os.mkdir(plot_dir)
 
         corr_file = os.path.join(plot_dir, 'timing_correlations.svg')
-        nplt.plot_confusion_correlations(timing, save_file=corr_file)
+        nplt.plot_timing_correlations(df, save_file=corr_file)
         corr_file = os.path.join(plot_dir, 'timing_correlations-exclude.svg')
-        nplt.plot_confusion_correlations(timing[timing['exclude'] == False],
+        nplt.plot_timing_correlations(df[df['exclude'] == False],
                                          save_file=corr_file)
 
         for taste, grp in df.groupby('taste'):
@@ -1418,15 +1418,15 @@ class HmmAnalysis(object):
         # Make confusion plots using exp_group
         corr_file = os.path.join(plot_dir, 'confusion_correlations.svg')
         comp_file = os.path.join(plot_dir, 'confusion_comparison.svg')
-        nplt.plot_timing_correlations(confusion, save_file=corr_file)
-        nplt.plot_timing_data(confusion, save_file=comp_file, group_col='exp_group')
+        nplt.plot_confusion_correlations(confusion, save_file=corr_file)
+        nplt.plot_confusion_data(confusion, save_file=comp_file, group_col='exp_group')
 
         # Make confusion plots using exp_group and excluding GFP-NoCTA
         corr_file = os.path.join(plot_dir, 'confusion_correlations-exclude.svg')
         comp_file = os.path.join(plot_dir, 'confusion_comparison-exclude.svg')
         nplt.plot_confusion_correlations(exc_df, save_file=corr_file)
         nplt.plot_confusion_data(exc_df, save_file=comp_file, group_col='exp_group')
-        
+
         # Make confusion plots using cta_group
         comp_file = os.path.join(plot_dir, 'confusion_comparison-CTA.svg')
         nplt.plot_confusion_data(confusion, save_file=comp_file, group_col='cta_group')

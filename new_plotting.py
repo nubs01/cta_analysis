@@ -28,8 +28,22 @@ def plot_confusion_correlations(df, save_file=None):
 
     fig, ax = plt.subplots(1,1,figsize=(9,8))
     cbar_ax = fig.add_axes([.9, 0.1, .05, .7])
-    g = sns.heatmap(df2.corr(method='spearman'), annot=True, vmin=-1, vmax=1, center=0,
-                    square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
+
+    cm = df2.rcorr(method='spearman', stars=False, padjust='bonf', decimals=15)
+    cm[cm == '-'] = 1
+    cm = cm.astype('float')
+    m1 = np.triu(cm)
+    m2 = np.tril(cm)
+    g = sns.heatmap(cm, annot=True, fmt='.2g', vmin=-1, vmax=1, center=0,
+                    square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax,
+                    mask=m1)
+    sns.heatmap(cm, annot=True, fmt='.1g', mask=m2, cbar=False, square=True, ax=ax)
+    ax.text(0.05, .9, 'corr')
+    ax.text(0.5, 0.25, 'p')
+    ax.plot([0,1], [0,1], color='k', linewidth=2)
+    statistics = df2.pairwise_corr(padjust='bonf', method='spearman')
+    # g = sns.heatmap(df2.corr(method='spearman'), annot=True, vmin=-1, vmax=1, center=0,
+    #                 square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
     fig.set_size_inches(12,8)
     g.set_title('Confusion Correlation Matrix', pad=20)
     cbar_ax.set_position([0.75, 0.20, 0.04, .71])
@@ -39,6 +53,9 @@ def plot_confusion_correlations(df, save_file=None):
     else:
         fig.savefig(save_file)
         plt.close(fig)
+        fn, ext = os.path.splitext(save_file)
+        fn += '.txt'
+        agg.write_dict_to_txt({'Confusion Correlation Statistics': statistics}, fn)
 
 
 def plot_coding_correlations(df, save_file=None):
@@ -60,10 +77,24 @@ def plot_coding_correlations(df, save_file=None):
 
     fig, ax = plt.subplots(1,1,figsize=(9,8))
     cbar_ax = fig.add_axes([.9, 0.1, .05, .7])
-    g = sns.heatmap(df2.corr(method='spearman'), annot=True, vmin=-1, vmax=1, center=0,
-                    square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
+
+    cm = df2.rcorr(method='spearman', stars=False, padjust='bonf', decimals=15)
+    cm[cm == '-'] = 1
+    cm = cm.astype('float')
+    m1 = np.triu(cm)
+    m2 = np.tril(cm)
+    g = sns.heatmap(cm, annot=True, fmt='.2g', vmin=-1, vmax=1, center=0,
+                    square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax,
+                    mask=m1)
+    sns.heatmap(cm, annot=True, fmt='.1g', mask=m2, cbar=False, square=True, ax=ax)
+    ax.text(0.05, .9, 'corr')
+    ax.text(0.5, 0.25, 'p')
+    ax.plot([0,1], [0,1], color='k', linewidth=2)
+    statistics = df2.pairwise_corr(padjust='bonf', method='spearman')
+    # g = sns.heatmap(df2.corr(method='spearman'), annot=True, vmin=-1, vmax=1, center=0,
+    #                 square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
     fig.set_size_inches(12,8)
-    g.set_title('Confusion Correlation Matrix', pad=20)
+    g.set_title('Coding Correlation Matrix', pad=20)
     cbar_ax.set_position([0.75, 0.20, 0.04, .71])
     plt.tight_layout()
     if save_file is None:
@@ -71,6 +102,9 @@ def plot_coding_correlations(df, save_file=None):
     else:
         fig.savefig(save_file)
         plt.close(fig)
+        fn, ext = os.path.splitext(save_file)
+        fn += '.txt'
+        agg.write_dict_to_txt({'Coding Correlation Statistics': statistics}, fn)
 
 
 def plot_timing_correlations(df, save_file=None):
@@ -88,10 +122,24 @@ def plot_timing_correlations(df, save_file=None):
 
     fig, ax = plt.subplots(1,1,figsize=(9,8))
     cbar_ax = fig.add_axes([.9, 0.1, .05, .7])
-    g = sns.heatmap(df2.corr(method='spearman'), annot=True, vmin=-1, vmax=1, center=0,
-                    square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
+
+    cm = df2.rcorr(method='spearman', stars=False, padjust='bonf', decimals=15)
+    cm[cm == '-'] = 1
+    cm = cm.astype('float')
+    m1 = np.triu(cm)
+    m2 = np.tril(cm)
+    g = sns.heatmap(cm, annot=True, fmt='.2g', vmin=-1, vmax=1, center=0,
+                    square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax,
+                    mask=m1)
+    sns.heatmap(cm, annot=True, fmt='.1g', mask=m2, cbar=False, square=True, ax=ax)
+    ax.text(0.05, .9, 'corr')
+    ax.text(0.5, 0.25, 'p')
+    ax.plot([0,1], [0,1], color='k', linewidth=2)
+    statistics = df2.pairwise_corr(padjust='bonf', method='spearman')
+    # g = sns.heatmap(df2.corr(method='spearman'), annot=True, vmin=-1, vmax=1, center=0,
+    #                 square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
     fig.set_size_inches(12,8)
-    g.set_title('Confusion Correlation Matrix', pad=20)
+    g.set_title('Timing Correlation Matrix', pad=20)
     cbar_ax.set_position([0.75, 0.20, 0.04, .71])
     plt.tight_layout()
     if save_file is None:
@@ -99,6 +147,10 @@ def plot_timing_correlations(df, save_file=None):
     else:
         fig.savefig(save_file)
         plt.close(fig)
+        fn, ext = os.path.splitext(save_file)
+        fn += '.txt'
+        agg.write_dict_to_txt({'Timing Correlation Statistics': statistics}, fn)
+
 
 def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
                         plot_points=False):
