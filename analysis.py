@@ -1372,6 +1372,13 @@ class HmmAnalysis(object):
             shutil.rmtree(plot_dir)
 
         os.mkdir(plot_dir)
+
+        corr_file = os.path.join(plot_dir, 'timing_correlations.svg')
+        nplt.plot_confusion_correlations(timing, save_file=corr_file)
+        corr_file = os.path.join(plot_dir, 'timing_correlations-exclude.svg')
+        nplt.plot_confusion_correlations(timing[timing['exclude'] == False],
+                                         save_file=corr_file)
+
         for taste, grp in df.groupby('taste'):
             exc_df = grp[grp['exclude'] == False]
             # exp_group
@@ -1411,8 +1418,8 @@ class HmmAnalysis(object):
         # Make confusion plots using exp_group
         corr_file = os.path.join(plot_dir, 'confusion_correlations.svg')
         comp_file = os.path.join(plot_dir, 'confusion_comparison.svg')
-        nplt.plot_confusion_correlations(confusion, save_file=corr_file)
-        nplt.plot_confusion_data(confusion, save_file=comp_file, group_col='exp_group')
+        nplt.plot_timing_correlations(confusion, save_file=corr_file)
+        nplt.plot_timing_data(confusion, save_file=comp_file, group_col='exp_group')
 
         # Make confusion plots using exp_group and excluding GFP-NoCTA
         corr_file = os.path.join(plot_dir, 'confusion_correlations-exclude.svg')
@@ -1507,14 +1514,13 @@ class HmmAnalysis(object):
             out.append(repr(h_count))
             print('\n'.join(out), file=f)
 
-    def process_fitted_hmms(self, overwrite=False):
+    def process_fitted_hmms(self, overwrite=False, hmm_plots=False):
         with pm.push_alert(success_msg='HMM Processing Complete! :D'):
             #ho = self.get_hmm_overview(overwrite=overwrite)
             ho = self.get_hmm_overview(overwrite=False)
             self.sort_hmms_by_params(overwrite=overwrite)
             self.mark_early_and_late_states()
             sorted_df = self.get_sorted_hmms()
-            #sorted_df = self.sort_hmms(overwrite=True)
             param_sets = sorted_df.sorting.unique()
             for set_name in param_sets:
                 if set_name == 'rejected':
@@ -1536,21 +1542,23 @@ class HmmAnalysis(object):
                     self.plot_hmm_confusion(save_dir=save_dir)
                     self.plot_hmm_timing(save_dir=save_dir)
 
-                plot_dir = os.path.join(save_dir, 'HMM Plots')
-                if os.path.isdir(plot_dir) and overwrite:
-                    shutil.rmtree(plot_dir)
+                if hmm_plots:
+                    plot_dir = os.path.join(save_dir, 'HMM Plots')
+                    if os.path.isdir(plot_dir) and overwrite:
+                        shutil.rmtree(plot_dir)
 
-                if not os.path.isdir(plot_dir):
-                    os.mkdir(plot_dir)
+                    if not os.path.isdir(plot_dir):
+                        os.mkdir(plot_dir)
 
-                self.plot_sorted_hmms(overwrite=overwrite, save_dir=plot_dir,
-                                      sorting_tag=set_name)
+                    self.plot_sorted_hmms(overwrite=overwrite, save_dir=plot_dir,
+                                          sorting_tag=set_name)
 
         return sorted_df
 
 
     @pm.push_alert(success_msg='HMM processing complete!')
-    def process_sorted_hmms(self, sorting='params #3', save_dir=None, overwrite=False):
+    def process_sorted_hmms(self, sorting='params #3', save_dir=None,
+                            overwrite=False, hmm_plots=False):
         if save_dir is None:
             save_dir = self.save_dir
 
@@ -1560,14 +1568,15 @@ class HmmAnalysis(object):
         self.plot_hmm_coding(save_dir=save_dir)
         self.plot_hmm_confusion(save_dir=save_dir)
         self.plot_hmm_timing(save_dir=save_dir)
-        # plot_dir = os.path.join(save_dir, 'HMM Plots')
-        # if os.path.isdir(plot_dir):
-        #     shutil.rmtree(plot_dir)
+        if hmm_plots:
+            plot_dir = os.path.join(save_dir, 'HMM Plots')
+            if os.path.isdir(plot_dir):
+                shutil.rmtree(plot_dir)
 
-        # os.mkdir(plot_dir)
+            os.mkdir(plot_dir)
 
-        # self.plot_sorted_hmms(overwrite=True, save_dir=plot_dir,
-        #                       sorting_tag=sorting)
+            self.plot_sorted_hmms(overwrite=True, save_dir=plot_dir,
+                                  sorting_tag=sorting)
 
 
     def plot_hmms_for_comp(self):

@@ -28,7 +28,7 @@ def plot_confusion_correlations(df, save_file=None):
 
     fig, ax = plt.subplots(1,1,figsize=(9,8))
     cbar_ax = fig.add_axes([.9, 0.1, .05, .7])
-    g = sns.heatmap(df2.corr(), annot=True, vmin=-1, vmax=1, center=0,
+    g = sns.heatmap(df2.corr(method='spearman'), annot=True, vmin=-1, vmax=1, center=0,
                     square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
     fig.set_size_inches(12,8)
     g.set_title('Confusion Correlation Matrix', pad=20)
@@ -60,7 +60,35 @@ def plot_coding_correlations(df, save_file=None):
 
     fig, ax = plt.subplots(1,1,figsize=(9,8))
     cbar_ax = fig.add_axes([.9, 0.1, .05, .7])
-    g = sns.heatmap(df2.corr(), annot=True, vmin=-1, vmax=1, center=0,
+    g = sns.heatmap(df2.corr(method='spearman'), annot=True, vmin=-1, vmax=1, center=0,
+                    square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
+    fig.set_size_inches(12,8)
+    g.set_title('Confusion Correlation Matrix', pad=20)
+    cbar_ax.set_position([0.75, 0.20, 0.04, .71])
+    plt.tight_layout()
+    if save_file is None:
+        return fig, ax
+    else:
+        fig.savefig(save_file)
+        plt.close(fig)
+
+
+def plot_timing_correlations(df, save_file=None):
+    data_cols = ['t_start', 't_end', 'duration']
+    convert_vars = ['exp_name', 'exp_group', 'cta_group', 'time_group', 'taste']
+    comparison_vars = ['palatability', 'n_cells']
+
+    df2 = df.copy()
+    for col in convert_vars:
+        grps = df[col].unique()
+        mapping = {x:i for i,x in enumerate(grps)}
+        df2[col] = df[col].map(mapping)
+
+    df2 = df2[[*convert_vars, *data_cols, *comparison_vars]].dropna()
+
+    fig, ax = plt.subplots(1,1,figsize=(9,8))
+    cbar_ax = fig.add_axes([.9, 0.1, .05, .7])
+    g = sns.heatmap(df2.corr(method='spearman'), annot=True, vmin=-1, vmax=1, center=0,
                     square=True, cmap='coolwarm', ax=ax, cbar_ax=cbar_ax)
     fig.set_size_inches(12,8)
     g.set_title('Confusion Correlation Matrix', pad=20)
