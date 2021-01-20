@@ -460,7 +460,7 @@ def plot_box_and_paired_points(df, x, y, hue, order=None, hue_order=None,
     return ax
 
 
-def plot_sig_stars(ax, posthoc_df, cond_order):
+def plot_sig_stars(ax, posthoc_df, cond_order, n_cells=None):
     if posthoc_df is None:
         return
 
@@ -509,16 +509,267 @@ def plot_sig_stars(ax, posthoc_df, cond_order):
         if y2 > max_y:
             max_y = y2
 
+    if n_cells:
+        for k,v in n_cells.items():
+            x1, y1 = pts[k]
+            ax.text(x1, .1*max_y, f'N={v}', horizontalalignment='center', color='white')
+
     sdists = np.array(sdists)
     idx = list(np.argsort(sdists))
     idx.reverse()
-    ytop = max_y + 8*len(truedf)
+    scaling = max_y * 8/100
+    ytop = max_y + scaling*len(truedf)
     maxy = ytop
     for i in idx:
         x1, x2, y1, y2, ss = slines[i]
         mid = (x1 + x2)/2
         ax.plot([x1, x1, x2, x2], [y1, ytop, ytop, y2], linewidth=1, color='k')
         ax.text(mid, ytop, ss, horizontalalignment='center', fontsize=14, fontweight='bold')
-        ytop -= 8
+        ytop -= scaling
 
     return maxy+5
+
+
+def plot_BIC(ho, proj, save_file=None):
+    ho = fix_hmm_overview(ho, proj)
+    ho = ho.query('notes == "sequential - BIC test"')
+    fig, ax = plt.subplots()
+    g = sns.pointplot(data=ho, x='n_states', y='BIC')
+    cond_order = sorted(ho['n_states'].unique())
+    kw_s, kw_p, gh = stats.kw_and_gh(ho, 'n_states', 'BIC')
+    #plot_sig_stars(g, gh, cond_order)
+    statistics = {'BIC Stats': {'KW stat': kw_s, 'KW p': kw_p, 'games_howell': gh}}
+    if save_file:
+        fig.savefig(save_file)
+        fn, ext = os.path.splitext(save_file)
+        agg.write_dict_to_txt(statistics, fn+'.txt')
+        plt.close(fig)
+    else:
+        return fig, ax, statistics
+
+
+def fix_hmm_overview(ho, proj):
+    df = proj._exp_info
+    ho['exp_group'] = ho['exp_name'].map(df.set_index('exp_name')['exp_group'].to_dict())
+    df['cta_group'] = df['CTA_learned'].apply(lambda x: 'CTA' if x else 'No CTA')
+    ho['cta_group'] = ho['exp_name'].map(df.set_index('exp_name')['cta_group'].to_dict())
+    ho['time_group'] = ho['rec_dir'].apply(lambda x: 'preCTA'
+                                           if ('pre' in x or 'Train' in x)
+                                           else 'postCTA')
+    return ho
+
+def plot_taste_responsive_units(tasty_df, save_file=None):
+    pal_df = tasty_df[tasty_df['single_unit']]
+    order = ORDERS['exp_group']
+    hue_order = ORDERS['time_group']
+    df = tasty_df.groupby(['exp_group', 'time_group',
+                           'taste', 'taste_responsive']).size()
+    df = df.unstack('taste_responsive', fill_value=0).reset_index()
+    df = df.rename(columns={True:'responsive', False:'non-responsive'})
+    def percent(x):
+        return 100*x['responsive']/(x['responsive'] + x['non-responsive'])
+
+    df['percent_responsive'] = df.apply(percent, axis=1)
+
+    tastes = list(df.taste.unique())
+    groups = list(it.product(df.exp_group.unique(), df.time_group.unique()))
+    fig, axes = plt.subplots(nrows=len(tastes), ncols=len(groups), figsize=(12,12))
+    for (eg, tg, tst), grp in df.groupby(['exp_group', 'time_group', 'taste']):
+        row = tastes.index(tst)
+        col = groups.index((eg, tg))
+        if len(tastes) == 1:
+            ax = axes[col]
+        else:
+            ax = axes[row, col]
+
+        labels = ['responsive', 'non-responsive']
+        values = [grp[x].sum() for x in labels]
+        ax.pie(values, autopct='%1.1f%%')
+        if ax.is_first_col():
+            ax.set_ylabel(tst)
+
+        if ax.is_first_row():
+            ax.set_title(f'{eg}\n{tg}')
+
+        if ax.is_last_row() and ax.is_last_col():
+            ax.legend(labels, bbox_to_anchor=[1.6, 2.5, 0, 0])
+
+    plt.subplots_adjust(top=0.85)
+    fig.suptitle('% Taste Responsive Units')
+
+    if save_file:
+        fig.savefig(save_file)
+        plt.close(fig)
+
+    df2 = tasty_df.groupby(['exp_name', 'exp_group',
+                            'time_group', 'rec_group',
+                            'unit_num'])['taste_responsive'].any()
+    df2 = df2.reset_index().groupby(['exp_group', 'time_group', 'taste_responsive']).size()
+    df2 = df2.unstack('taste_responsive', fill_value=0)
+    df2 = df2.rename(columns={True: 'responsive', False: 'non-responsive'}).reset_index()
+    df2['percent_responsive'] =  df2.apply(percent, axis=1)
+    df2['n_cells'] = df2.apply(lambda x: x['responsive'] + x['non-responsive'], axis=1)
+    df2['labels'] = df2.apply(lambda x: '%s_%s' % (x['exp_group'], x['time_group']), axis=1)
+    n_cells = df2.set_index('labels')['n_cells'].to_dict()
+
+    fig2, axes2 = plt.subplots(figsize=(12,9))
+    statistics = stats.chi2_contingency_for_taste_responsive_cells(df2)
+    g = sns.barplot(data=df2, x='exp_group', hue='time_group',
+                    y='percent_responsive', order=order,
+                    hue_order=hue_order, ax=axes2)
+    cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))]
+    ph_df = pd.DataFrame.from_dict(statistics, orient='index')
+    ph_df = ph_df.iloc[1:]
+    plot_sig_stars(axes2, ph_df, cond_order, n_cells=n_cells)
+    axes2.set_title('% Taste Responsive Units')
+
+    if save_file:
+        fn, ext = os.path.splitext(save_file)
+        fn = fn + '-stats'
+        statistics['counts'] = df2
+        agg.write_dict_to_txt(statistics, fn + '.txt')
+        fig2.savefig(fn+'.svg')
+        plt.close(fig2)
+        return
+    else:
+        return fig, axes, fig2, axes2
+
+
+def plot_pal_responsive_units(pal_df, save_dir=None):
+    pal_df = pal_df[pal_df['single_unit']]
+    order = ORDERS['exp_group']
+    hue_order = ORDERS['time_group']
+    cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))]
+    pal_df['abs_corr'] = pal_df['spearman_r'].apply(np.abs)
+    pal_df['group_col'] = pal_df.apply(lambda x: '%s_%s' % (x['exp_group'], x['time_group']), axis=1)
+
+    # Plot 1
+    fig, ax = plt.subplots(figsize=(10,9))
+    g = sns.barplot(data=pal_df, x='exp_group', y='abs_corr', hue='time_group',
+                    order=order, hue_order=hue_order, ax=ax)
+    g.set_title('Peak Spearman Correlation to Palatability')
+    g.set_ylabel('|Spearman R|')
+    g.set_xlabel('')
+    kw_stat, kw_p, gh_df = stats.kw_and_gh(pal_df, 'group_col', 'spearman_r')
+    n_cells = pal_df.groupby('group_col')['spearman_r'].size().to_dict()
+    plot_sig_stars(ax, gh_df, cond_order, n_cells=n_cells)
+    if save_dir:
+        fn = os.path.join(save_dir, 'palatability_spearman_corr.svg')
+        fig.savefig(fn)
+        fn2 = fn.replace('.svg', '.txt')
+        out = {'kw_stat': kw_stat, 'kw_p': kw_p, 'Games-Howell posthoc': gh_df}
+        agg.write_dict_to_txt(out, fn2)
+        plt.close(fig)
+
+    # taste disrcrim plot
+    df = pal_df.groupby(['exp_group', 'time_group',
+                         'taste_discriminative']).size()
+    df = df.unstack('taste_discriminative', fill_value=0).reset_index()
+    df = df.rename(columns={True:'discriminative', False:'non-discriminative'})
+    def percent(x):
+        return 100*x['discriminative']/(x['discriminative'] + x['non-discriminative'])
+
+    df['percent_discriminative'] = df.apply(percent, axis=1)
+
+    groups = list(it.product(df.exp_group.unique(), df.time_group.unique()))
+    fig, axes = plt.subplots( ncols=len(groups), figsize=(12,12))
+    for (eg, tg), grp in df.groupby(['exp_group', 'time_group']):
+        col = groups.index((eg, tg))
+        ax = axes[col]
+
+        labels = ['discriminative', 'non-discriminative']
+        values = [grp[x].sum() for x in labels]
+        ax.pie(values, autopct='%1.1f%%')
+
+        if ax.is_first_row():
+            ax.set_title(f'{eg}\n{tg}')
+
+        if ax.is_last_row() and ax.is_last_col():
+            ax.legend(labels, bbox_to_anchor=[1.6, 2.5, 0, 0])
+
+    plt.subplots_adjust(top=0.85)
+    fig.suptitle('% Taste Discriminative Units')
+
+    if save_dir:
+        fn = os.path.join(save_dir, 'taste_discriminative.svg')
+        fig.savefig(fn)
+        plt.close(fig)
+
+    df2 = pal_df.groupby(['exp_name', 'exp_group',
+                          'time_group', 'rec_group',
+                          'unit_num'])['taste_discriminative'].any()
+    df2 = df2.reset_index().groupby(['exp_group', 'time_group', 'taste_discriminative']).size()
+    df2 = df2.unstack('taste_discriminative', fill_value=0)
+    df2 = df2.rename(columns={True: 'discriminative', False: 'non-discriminative'}).reset_index()
+    df2['percent_discriminative'] =  df2.apply(percent, axis=1)
+    df2['n_cells'] = df2.apply(lambda x: x['discriminative'] + x['non-discriminative'], axis=1)
+    df2['labels'] = df2.apply(lambda x: '%s_%s' % (x['exp_group'], x['time_group']), axis=1)
+    n_cells = df2.set_index('labels')['n_cells'].to_dict()
+
+    fig2, axes2 = plt.subplots(figsize=(12,9))
+    statistics = stats.chi2_contingency_for_taste_responsive_cells(df2,
+                                                                   value_cols=['discriminative',
+                                                                               'non-discriminative'])
+    g = sns.barplot(data=df2, x='exp_group', hue='time_group',
+                    y='percent_discriminative', order=order,
+                    hue_order=hue_order, ax=axes2)
+    cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))]
+    ph_df = pd.DataFrame.from_dict(statistics, orient='index')
+    ph_df = ph_df.iloc[1:]
+    plot_sig_stars(axes2, ph_df, cond_order, n_cells=n_cells)
+    axes2.set_title('% Taste Discriminative Units')
+
+    if save_dir:
+        fn = os.path.join(save_dir, 'taste_discriminative_comparison')
+        statistics['counts'] = df2
+        agg.write_dict_to_txt(statistics, fn + '.txt')
+        fig2.savefig(fn+'.svg')
+        plt.close(fig2)
+        return
+    else:
+        return fig, axes, fig2, axes2
+
+def plot_total_spearman_correlation():
+    pass
+
+def plot_MDS(df, group_col='exp_group', save_file=None):
+    order = ORDERS[group_col]
+    hue_order = ORDERS['time_group']
+    col_order = ORDERS['MDS_time']
+    cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))] 
+    df['group_col'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
+
+    g = sns.catplot(data=df, y='MDS_dQ_v_dN', x=group_col,
+                    hue='time_group', col='time', kind='bar', order=order,
+                    hue_order=hue_order, col_order=col_order)
+    
+    axes = g.axes[0]
+    statistics = {}
+    for ax, (tg, grp) in zip(axes, df.groupby('time')):
+        kw_s, kw_p, gh_df = stats.kw_and_gh(grp, 'group_col', 'MDS_dQ_v_dN')
+        statistics[tg] = {'kw-stat': kw_s, 'kw-p': kw_p,
+                          'Games-Howell posthoc': gh_df}
+        n_cells = grp.groupby('group_col').size().to_dict()
+        plot_sig_stars(ax, gh_df, cond_order, n_cells=n_cells)
+        ax.set_title(tg)
+        if ax.is_first_col():
+            ax.set_ylabel('dQ/dN')
+
+        ax.set_xlabel('')
+
+    g.fig.set_size_inches(12,10)
+    g.fig.subplots_adjust(top=0.85)
+    g.fig.suptitle('Relative MDS Distances of Saccharin Trials')
+    if save_file:
+        g.fig.savefig(save_file)
+        plt.close(g.fig)
+        fn, ext = os.path.splitext(save_file)
+        agg.write_dict_to_txt(statistics, fn+'.txt')
+    else:
+        return g, statistics
+
+
+        
+
+
+    pass

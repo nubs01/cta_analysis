@@ -335,10 +335,10 @@ class ProjectAnalysis(object):
                                         group_col='cta_group', alpha=alpha,
                                         exp_group='No CTA', ctrl_group='CTA')
 
-            sub_df = df.query('exp_group == "Cre" | (exp_group == "GFP" & '
-                              'cta_group == "CTA")')
+            sub_df = df.query('(exp_group == "Cre" & cta_group == "No CTA") '
+                              '| (exp_group == "GFP" & cta_group == "CTA")')
             hf.compare_response_changes(sub_df, tst, plot_dir, save_dir,
-                                        f'{tst}_responses_changed-exclude_GFP-NoCTA',
+                                        f'{tst}_responses_changed-exclude_GFP-NoCTA_Cre-CTA',
                                         group_col='exp_group', alpha=alpha,
                                         exp_group='Cre', ctrl_group='GFP')
 
@@ -403,7 +403,11 @@ class ProjectAnalysis(object):
         print('Processing taste resposiveness')
         print('-' * 80)
         resp_units = resp_units.apply(lambda x: apply_taste_responsive(x, params, resp_file), axis=1)
+        resp_units['exclude'] = resp_units.apply(apply_exclude, axis=1)
         feather.write_dataframe(resp_units, tasty_unit_file)
+        fn = os.path.join(save_dir, 'taste_responsive.svg')
+        df = resp_units.query('exclude == False and taste != "Water"')
+        nplt.plot_taste_responsive_units(df, fn)
 
         pal_units = all_units[all_units.rec_name.str.contains('4taste')].copy()
         plot_dir = os.path.join(save_dir, 'single_unit_plots')
@@ -418,7 +422,11 @@ class ProjectAnalysis(object):
         print('-' * 80)
         pal_units = pal_units.apply(foo, axis=1)
         pal_units['taste_discriminative'] = pal_units['taste_discriminative'].astype('bool')
+        pal_units['exclude'] = pal_units.apply(apply_exclude, axis=1)
         feather.write_dataframe(pal_units, pal_unit_file)
+        df = pal_units[pal_units['exclude'] == False]
+        nplt.plot_pal_responsive_units(df, save_dir)
+
         return resp_units, pal_units
 
     def make_aggregate_single_unit_plots(self):
@@ -500,6 +508,7 @@ class ProjectAnalysis(object):
                                 on=['exp_name', 'exp_group', 'time_group',
                                     'time', 'taste','trial', 'n_cells', 'PC1',
                                     'PC2', 'MDS1', 'MDS2'])
+        dist_metrics = apply_grouping_cols(dist_metrics, self.project)
         feather.write_dataframe(pc_data, pc_data_file)
         feather.write_dataframe(dist_data, dist_data_file)
         feather.write_dataframe(dist_metrics, other_dist_file)
@@ -520,6 +529,11 @@ class ProjectAnalysis(object):
         plt.plot_mds_metric(metric_data, os.path.join(mds_dir, 'relative_MDS_distances.svg'))
         plt.plot_animal_pca(pc_data, os.path.join(save_dir, 'animal_pca'))
         plt.plot_animal_mds(pc_data, os.path.join(mds_dir, 'animal_mds'))
+
+        metric_data = apply_grouping_cols(metric_data, self.project)
+        metric_data = metric_data.query('exclude == False')
+        fn = os.path.join(mds_dir, 'Saccharin_MDS_distances.svg')
+        nplt.plot_MDS(metric_data, save_file=fn)
 
         # Change exp group to CTA learning and re-plot
         learn_map = self.project._exp_info.set_index('exp_name')
@@ -1357,6 +1371,7 @@ class HmmAnalysis(object):
 
         return coding, timings, confusion
 
+
     def plot_hmm_timing(self, save_dir=None):
         if save_dir is None:
             save_dir = self.save_dir
@@ -1397,7 +1412,6 @@ class HmmAnalysis(object):
             # cta_group excluding GFP-NoCTA
             comp_file = os.path.join(plot_dir, f'{taste}_timing_comparison-CTA-exclude.svg')
             nplt.plot_timing_data(exc_df, save_file=comp_file, group_col='cta_group')
-
 
     def plot_hmm_confusion(self, save_dir=None):
         if save_dir is None:
@@ -1464,7 +1478,7 @@ class HmmAnalysis(object):
         comp_file = os.path.join(plot_dir, 'coding_comparison-exclude.svg')
         nplt.plot_coding_correlations(exc_df, save_file=corr_file)
         nplt.plot_coding_data(exc_df, save_file=comp_file, group_col='exp_group')
-        
+
         # Make coding plots using cta_group
         comp_file = os.path.join(plot_dir, 'coding_comparison-CTA.svg')
         nplt.plot_coding_data(coding, save_file=comp_file, group_col='cta_group')
@@ -1472,6 +1486,7 @@ class HmmAnalysis(object):
         # Make coding plots using cta_group and excluding GFP-NoCTA
         comp_file = os.path.join(plot_dir, 'coding_comparison-CTA-exclude.svg')
         nplt.plot_coding_data(exc_df, save_file=comp_file, group_col='cta_group')
+
 
     def plot_hmm_coding_and_timing(self, save_dir=None):
         if save_dir is None:
@@ -1534,14 +1549,22 @@ class HmmAnalysis(object):
                 if not os.path.isdir(save_dir):
                     os.mkdir(save_dir)
 
+                self.write_hmm_sorting_params(sorting=set_name, save_dir=save_dir)
                 best_hmms = self.get_best_hmms(overwrite=True, save_dir=save_dir,
                                                sorting=set_name)
+                notes = best_hmms.dropna().notes.unique()[0]
+                if 'BIC test' in notes:
+                    continue
+
                 if sum(sorted_df['sorting'] == set_name) > 30:
-                    self.analyze_hmms(overwrite=True, save_dir=save_dir)
-                    self.plot_hmm_coding_and_timing(save_dir=save_dir)
-                    self.plot_hmm_coding(save_dir=save_dir)
-                    self.plot_hmm_confusion(save_dir=save_dir)
-                    self.plot_hmm_timing(save_dir=save_dir)
+                    try:
+                        self.analyze_hmms(overwrite=True, save_dir=save_dir)
+                        self.plot_hmm_coding_and_timing(save_dir=save_dir)
+                        self.plot_hmm_coding(save_dir=save_dir)
+                        self.plot_hmm_confusion(save_dir=save_dir)
+                        self.plot_hmm_timing(save_dir=save_dir)
+                    except:
+                        print(f'Failed to analyze {set_name}')
 
                 if hmm_plots:
                     plot_dir = os.path.join(save_dir, 'HMM Plots')
@@ -1563,6 +1586,11 @@ class HmmAnalysis(object):
         if save_dir is None:
             save_dir = self.save_dir
 
+        sorted_df = self.get_sorted_hmms()
+        if not sorting in sorted_df.sorting.unique():
+            raise ValueError(f'Sorting not found: {sorting}')
+
+        self.write_hmm_sorting_params(sorting=sorting, save_dir=save_dir)
         best_hmms = self.get_best_hmms(overwrite=overwrite, sorting=sorting, save_dir=save_dir)
         self.analyze_hmms(overwrite=overwrite, save_dir=save_dir)
         self.plot_hmm_coding_and_timing(save_dir=save_dir)
@@ -1579,6 +1607,28 @@ class HmmAnalysis(object):
             self.plot_sorted_hmms(overwrite=True, save_dir=plot_dir,
                                   sorting_tag=sorting)
 
+    def write_hmm_sorting_params(self, sorting='params #3', save_dir=None):
+        if save_dir is None:
+            save_dir = self.save_dir
+
+        param_cols = ['n_states', 'time_start', 'time_end', 'area',
+                      'unit_type', 'dt', 'n_trials', 'notes']
+        sorted_df = self.get_sorted_hmms()
+        df = sorted_df.query('sorting == @sorting')
+        name, group = next(iter(df.groupby(param_cols)))
+        summary = ['-'*80,
+                   'parameter set: %s' % sorting,
+                   '# of states: %i' % name[0],
+                   'time: %i to %i' % (name[1], name[2]),
+                   'area: %s' % name[3],
+                   'unit type: %s' % name[4],
+                   'dt: %g' % name[5],
+                   'n_trials: %i' % name[6],
+                   'notes: %s' % name[7],
+                   '# of HMMs: %i' % len(group),
+                   '-'*80]
+        with open(os.path.join(save_dir, 'HMM_parameters.txt'), 'w') as f:
+            f.write('\n'.join(summary))
 
     def plot_hmms_for_comp(self):
         sorted_df = self.get_sorted_hmms()
@@ -1674,7 +1724,8 @@ class HmmAnalysis(object):
         sorted_df['sorting'] = 'rejected'
         sorted_df['sort_method'] = 'auto'
         met_params = sorted_df.query('(notes == "sequential - final") |'
-                                     ' (notes == "sequential - low thresh")')
+                                     ' (notes == "sequential - low thresh") |'
+                                     ' (notes == "sequential - BIC test")')
         param_cols = ['n_states', 'time_start', 'time_end', 'area',
                       'unit_type', 'dt', 'n_trials', 'notes']
         param_num = 0
@@ -1786,6 +1837,7 @@ def apply_consumption_to_project(proj):
     #    tmp = proj._exp_info['saccharin_consumption']
 
     proj._exp_info['CTA_learned'] = (tmp < 0.8)
+    proj._exp_info['cta_group'] = proj._exp_info.CTA_learned.map({True: 'CTA', False: 'No CTA'})
     proj.save()
 
 
@@ -2248,6 +2300,41 @@ def fit_anim_hmms(anim):
                     handler.run(constraint_func=hmma.sequential_constrained)
 
 
+@pm.push_alert(success_msg='Finished fitting HMMs')
+def fit_hmms_for_BIC_test(proj, all_units, min_states=2, max_states=6):
+    base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
+                   'max_iter': 200, 'n_repeats': 50, 'time_start': -250,
+                   'time_end': 2000, 'area': 'GC',
+                   'hmm_class': 'PoissonHMM', 'threshold':1e-6,
+                   'notes': 'sequential - BIC test'}
+
+    for i, row in proj._exp_info.iterrows():
+        anim = row['exp_name']
+        with pm.push_alert(success_msg=f'Done fiiting for {anim}'):
+            if anim == 'RN5':
+                anim = 'RN5b'
+
+            file_dirs, anim_dir = get_file_dirs(anim)
+            for rec_dir in file_dirs:
+                units = all_units.query('area == "GC" and rec_dir == @rec_dir and single_unit == True')
+                if len(units) < 3:
+                    print('Only %i units for %s. Skipping...' % (len(units), os.path.basename(rec_dir)))
+                    continue
+
+                handler = phmm.HmmHandler(rec_dir)
+                for N in range(min_states, max_states):
+                    p = base_params.copy()
+                    p['n_states'] = N
+                    handler.add_params(p)
+
+                print(f'Fitting {rec_dir}')
+                if LOCAL_MACHINE == 'StealthElf':
+                    handler.run(constraint_func=hmma.sequential_constrained)
+                elif LOCAL_MACHINE == 'Mononoke':
+                    with parallel_backend('multiprocessing'):
+                        handler.run(constraint_func=hmma.sequential_constrained)
+
+
 def final_refits(needed_hmms):
     #refit_anim(needed_hmms, 'RN24', rec_group='ctaTrain')
     #refit_anim(needed_hmms, 'RN24', rec_group='postCTA', custom_params={'time_end': 1750})
@@ -2320,10 +2407,108 @@ def get_hmm_firing_rate_PCs(best_hmms):
 
         # TODO: Finish this
 
+def apply_exclude(row):
+    '''exclude GFP - No CTA and Cre - CTA'''
+    if (row['exp_group'] == 'GFP' and row['cta_group'] == 'No CTA'):
+        return True
+
+    if (row['exp_group'] == 'Cre' and row['cta_group'] == 'CTA'):
+        return True
+
+    return False
+
+def apply_grouping_cols(df, proj):
+    if 'exclude' not in proj._exp_info.columns:
+        proj._exp_info['exclude'] = proj._exp_info.apply(apply_exclude, axis=1)
+        proj.save()
+
+    if 'exp_name' not in df.columns and 'exp_dir' not in df.columns:
+        return df
+
+    if 'exp_name' not in df.columns:
+        tmp = proj._exp_info.set_index('exp_dir')['exp_name'].to_dict()
+        df['exp_name'] = df['exp_dir'].map(tmp)
+
+    map_df = proj._exp_info.set_index('exp_name')
+    df['cta_group'] = df['exp_name'].map(map_df['cta_group'].to_dict())
+    df['exp_group'] = df['exp_name'].map(map_df['exp_group'].to_dict())
+    df['exclude'] = df.apply(apply_exclude, axis=1)
+    return df
 
 
+def consolidate_results():
+    save_dir = os.path.join(os.path.expanduser('~'), 'Dropbox', 'Harmonia',
+                            'Share', 'Stk11_Results')
+    if os.path.isdir(save_dir):
+        shutil.rmtree(save_dir)
 
+    os.mkdir(save_dir)
+    sds = {'data': os.path.join(save_dir, 'data'),
+           'plots': os.path.join(save_dir, 'plots'),
+           'stats': os.path.join(save_dir, 'stats')}
 
+    proj_dir = DATA_DIR
+    proj = load_project(proj_dir)
+    PA = ProjectAnalysis(proj)
+    HA = HmmAnalysis(proj)
+
+    d1 = os.path.join(PA.save_dir,'single_unit_responses')
+    d2 = os.path.join(PA.save_dir, 'mds_analysis')
+    d3 = os.path.join(HA.save_dir, 'coding_analysis')
+    d4 = os.path.join(HA.save_dir, 'confusion_analysis')
+    d5 = os.path.join(HA.save_dir, 'timing_analysis')
+    files = [
+             os.path.join(d1, 'unit_taste_responsivity.feather'),
+             os.path.join(d1, 'unit_pal_discrim.feather'),
+             # Taste responsive
+             os.path.join(d1, 'taste_responsive.svg'),
+             os.path.join(d1, 'taste_responsive-stats.svg'),
+             os.path.join(d1, 'taste_responsive-stats.txt'),
+             # Pal responsive
+             os.path.join(d1, 'palatability_spearman_corr.svg'),
+             os.path.join(d1, 'palatability_spearman_corr.txt'),
+             # Taste discriminative
+             os.path.join(d1, 'taste_discriminative.svg'),
+             os.path.join(d1, 'taste_discriminative_comparison.txt'),
+             os.path.join(d1, 'taste_discriminative_comparison.svg'),
+             os.path.join(d1, 'Taste_responsive_over_time-Saccharin.svg'),
+             # MDS analysis
+             os.path.join(d2, 'Saccharin_MDS_distances.svg'),
+             os.path.join(d2, 'Saccharin_MDS_distances.txt'),
+             # HMM identity and palatability coding
+             os.path.join(d3, 'coding_correlations-exclude.svg'),
+             os.path.join(d3, 'coding_comparison-exclude.svg'),
+             os.path.join(d3, 'coding_comparison-exclude.txt'),
+             # HMM identity and palatability confusion
+             os.path.join(d4, 'confusion_correlations-exclude.svg'),
+             os.path.join(d4, 'confusion_comparison-exclude.svg'),
+             os.path.join(d4, 'confusion_comparison-exclude.txt'),
+             # HMM transition timing
+             os.path.join(d5, 'timing_correlations-exclude.svg'),
+             os.path.join(d5, 'Saccharin_timing_comparison-exclude.svg'),
+             os.path.join(d5, 'Saccharin_timing_comparison-exclude.txt'),
+             os.path.join(HA.save_dir, 'HMM_Median_Gamma_Probs.png'),
+             os.path.join(HA.save_dir, 'HMM_parameters.txt'),
+             os.path.join(proj_dir, 'Stk11_Project_project.p'),
+             *HA.files.values(),
+             *PA.files.values()
+            ]
+
+    ext_map = {'feather': 'data', 'npy': 'data', 'p': 'data',
+               'svg': 'plots', 'png': 'plots', 'txt': 'stats', 'json': 'data'}
+    missing = []
+    for f in files:
+        fn, ext = os.path.splitext(f)
+        dest = sds[ext_map[ext[1:]]]
+        if os.path.isfile(f):
+            fn2 = shutil.copy(f, dest)
+        else:
+            missing.append(f)
+
+        print(f'copied {f} --> {fn2}\n')
+
+    for f in missing:
+        print(f'Missing file: {f}\n')
 
 
 if __name__=="__main__":

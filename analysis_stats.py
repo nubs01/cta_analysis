@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import itertools as it
 from joblib import Parallel, delayed, cpu_count
-from scipy.stats import t, fisher_exact, shapiro, levene, chisquare, kruskal
+from scipy.stats import t, fisher_exact, shapiro, levene, chisquare, kruskal, chi2_contingency
 from sklearn.model_selection import LeavePOut
 from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
@@ -97,6 +97,35 @@ def chi2_with_posthoc(df, alpha=0.05, group_col='exp_group', taste='Saccharin',
 
     posthoc_df = pd.DataFrame(out_data)
     return stat_all, p_all, table1, posthoc_df, out_tables, percent_diff
+
+def chi2_contingency_for_taste_responsive_cells(df, alpha=0.05,
+                                                value_cols=['responsive',
+                                                            'non-responsive'],
+                                                group_cols=['exp_group',
+                                                            'time_group']):
+    table1 = df.groupby(group_cols)[value_cols].sum()
+    stat, p, dof, expected = chi2_contingency(table1.to_numpy()[:, -len(value_cols):])
+
+    reject = (p<=alpha)
+    statistics = {'omnibus': {'A': 'all', 'B': 'all', 'statistic': stat,
+                              'pval':p, 'dof': dof, 'reject': reject}}
+    if p <= alpha:
+        tmp = [df[x].unique() for x in group_cols]
+        pairs = list(it.combinations(it.product(*tmp),2))
+        # only compare pairs with some common factor
+        pairs = [[(x1,y1), (x2,y2)] for (x1,y1),(x2,y2) in pairs if x1==x2 or y1==y2]
+        n_pairs = len(pairs)
+        for i, pair in enumerate(pairs):
+            s, p, d, ex  = chi2_contingency(table1.loc[pair])
+            # bonferoni correction
+            p = p * n_pairs
+            reject = (p<=alpha)
+            tmp = {'A': '%s_%s' % pair[0], 'B': '%s_%s' % pair[1],
+                   'statistic': s, 'pval': p, 'dof': d, 'reject': reject}
+            statistics[i] = tmp
+
+    return statistics
+
 
 def permutation_test(labels, data, alpha=0.05, group_col=0, n_boot=1000, n_cores=1):
     '''data should be for a single tastant and 2 groups

@@ -414,7 +414,7 @@ def summarize_sequence(path):
 def write_dict_to_txt(dat, save_file=None, tabs=0):
     out = []
     for k,v in dat.items():
-        out.append('\t'*tabs + k)
+        out.append('\t'*tabs + str(k))
         if isinstance(v, Mapping):
             out.extend(write_dict_to_txt(v, tabs=tabs+1))
         elif isinstance(v, pd.DataFrame):

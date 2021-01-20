@@ -975,14 +975,14 @@ def make_best_hmm_list(all_units, sorted_hmms, min_cells=3, area='GC', sorting='
     hmm_df = sorted_hmms.set_index(['exp_name', 'rec_group', 'taste'])
     def apply_info(row):
         exp, rec, tst = row[['exp_name', 'rec_group', 'taste']]
-        hid, srt, es, ls = None, None, None, None
+        hid, srt, es, ls, notes = None, None, None, None, None
         if (exp, rec, tst) in hmm_df.index:
             hr = hmm_df.loc[(exp, rec, tst)]
-            hid, srt, es, ls = hr[['hmm_id', 'sorting', 'early_state', 'late_state']]
+            hid, srt, es, ls, notes = hr[['hmm_id', 'sorting', 'early_state', 'late_state', 'notes']]
 
-        return pd.Series({'hmm_id': hid, 'sorting': srt, 'early_state': es, 'late_state': ls})
+        return pd.Series({'hmm_id': hid, 'sorting': srt, 'early_state': es, 'late_state': ls, 'notes': notes})
 
-    df[['hmm_id', 'sorting', 'early_state', 'late_state']] = df.apply(apply_info, axis=1)
+    df[['hmm_id', 'sorting', 'early_state', 'late_state', 'notes']] = df.apply(apply_info, axis=1)
     return df
 
 

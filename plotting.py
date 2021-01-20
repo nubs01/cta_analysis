@@ -28,7 +28,8 @@ ORDERS = {'exp_group': ['GFP', 'Cre'],
           'cta_group': ['CTA', 'No CTA'],
           'taste': ['Water', 'NaCl', 'Citric Acid', 'Quinine', 'Saccharin'],
           'time_group': ['preCTA', 'postCTA'],
-          'state_group': ['early', 'late']}
+          'state_group': ['early', 'late'],
+          'MDS_time': ['Early (0-750ms)', 'Late (750-1500ms)']}
 
 def plot_unit_waveforms(rec_dir, unit, ax=None, save_file=None):
     if ax is None:
