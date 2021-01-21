@@ -157,7 +157,6 @@ class ProjectAnalysis(object):
                 r1 = row['rec1']
                 u1 = row['unit1']
                 held_df.loc[i, 'area'] = all_units.query('rec_dir == @r1 and unit_name == @u1').iloc[0]['area']
-
             self.write_unit_info(held_df=held_df)
 
         return all_units, held_df
@@ -446,8 +445,8 @@ class ProjectAnalysis(object):
 
         tmp_grp = resp_units.groupby(['exp_group', 'time_group', 'taste'])['taste_responsive']
         resp_df = tmp_grp.apply(lambda x: 100 * np.sum(x) / len(x)).reset_index()
-        plt.plot_taste_responsive(resp_df, resp_file)
-        plt.plot_taste_discriminative(pal_units, discrim_file)
+        #plt.plot_taste_responsive(resp_df, resp_file)
+        #plt.plot_taste_discriminative(pal_units, discrim_file)
         plt.plot_aggregate_spearman(pal_units, spearman_file)
         plt.plot_aggregate_pearson(pal_units, pearson_file)
 
@@ -1109,11 +1108,13 @@ class HmmAnalysis(object):
             best_file = os.path.join(save_dir, os.path.basename(best_file))
 
         if os.path.isfile(best_file) and not overwrite:
-            return feather.read_dataframe(best_file)
+            best_hmms = feather.read_dataframe(best_file)
+            return best_hmms
 
         df = self.get_sorted_hmms()
         all_units, _ = ProjectAnalysis(self.project).get_unit_info()
         out_df = hmma.make_best_hmm_list(all_units, df, sorting=sorting)
+        out_df = apply_grouping_cols(out_df, self.project)
         feather.write_dataframe(out_df, best_file)
         return out_df
 
@@ -1755,6 +1756,20 @@ class HmmAnalysis(object):
 
         self.write_sorted_hmms(sorted_df)
 
+    def sort_hmms_by_BIC(self):
+        sorted_df = self.get_sorted_hmms()
+        if sorted_df is None:
+            sorted_df = self.get_hmm_overview()
+            sorted_df['sorting'] = 'rejected'
+            sorted_df['sort_method'] = 'auto'
+
+        df = sorted_df[sorted_df.notes.str.contains('BIC test')]
+        minima = []
+        for name, group in df.groupby(['exp_name', 'rec_group', 'taste']):
+            minima.append(group.BIC.idxmin())
+
+        sorted_df.loc[minima, 'sorting'] = 'best_BIC'
+        self.write_sorted_hmms(sorted_df)
 
 def organize_hmms(sorted_df, plot_dir):
     req_params = {'dt': 0.001, 'unit_type': 'single', 'time_end': 2000}
@@ -2435,6 +2450,21 @@ def apply_grouping_cols(df, proj):
     df['exclude'] = df.apply(apply_exclude, axis=1)
     return df
 
+def apply_unit_firing_rates(df):
+   def get_firing_rates(row):
+       rec = row['rec_dir']
+       unit = row['unit_num']
+       t, sa = h5io.get_spike_data(rec, unit)
+       dim = h5io.get_digital_mapping(rec, 'in')
+       spikes = np.vstack(list(sa.values()))
+       bidx = np.where(t < 0)[0]
+       ridx = np.where(t > 0)[0]
+       baseline = np.mean(np.sum(spikes[:,bidx], axis=1))
+       response = np.mean(np.sum(spikes[:,ridx], axis=1))
+       return pd.Series({'baseline_firing': baseline, 'response_firing': response})
+
+    df[['baseline_firing', 'response_firing']] = df.apply(get_firing_rates, axis=1)
+    return df
 
 def consolidate_results():
     save_dir = os.path.join(os.path.expanduser('~'), 'Dropbox', 'Harmonia',
@@ -2446,6 +2476,9 @@ def consolidate_results():
     sds = {'data': os.path.join(save_dir, 'data'),
            'plots': os.path.join(save_dir, 'plots'),
            'stats': os.path.join(save_dir, 'stats')}
+
+    for k,v in sds.items():
+        os.mkdir(v)
 
     proj_dir = DATA_DIR
     proj = load_project(proj_dir)

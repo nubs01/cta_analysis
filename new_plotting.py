@@ -533,8 +533,9 @@ def plot_sig_stars(ax, posthoc_df, cond_order, n_cells=None):
 def plot_BIC(ho, proj, save_file=None):
     ho = fix_hmm_overview(ho, proj)
     ho = ho.query('notes == "sequential - BIC test"')
+    ho = ho[ho['n_cells'] >= 3]
     fig, ax = plt.subplots()
-    g = sns.pointplot(data=ho, x='n_states', y='BIC')
+    g = sns.barplot(data=ho, x='n_states', y='BIC', ax=ax)
     cond_order = sorted(ho['n_states'].unique())
     kw_s, kw_p, gh = stats.kw_and_gh(ho, 'n_states', 'BIC')
     #plot_sig_stars(g, gh, cond_order)
@@ -559,7 +560,7 @@ def fix_hmm_overview(ho, proj):
     return ho
 
 def plot_taste_responsive_units(tasty_df, save_file=None):
-    pal_df = tasty_df[tasty_df['single_unit']]
+    tasty_df = tasty_df[tasty_df['single_unit'] & (tasty_df['area'] == 'GC')].copy()
     order = ORDERS['exp_group']
     hue_order = ORDERS['time_group']
     df = tasty_df.groupby(['exp_group', 'time_group',
@@ -636,7 +637,7 @@ def plot_taste_responsive_units(tasty_df, save_file=None):
 
 
 def plot_pal_responsive_units(pal_df, save_dir=None):
-    pal_df = pal_df[pal_df['single_unit']]
+    pal_df = pal_df[pal_df['single_unit'] & (pal_df['area'] == 'GC')].copy()
     order = ORDERS['exp_group']
     hue_order = ORDERS['time_group']
     cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))]
@@ -767,9 +768,3 @@ def plot_MDS(df, group_col='exp_group', save_file=None):
         agg.write_dict_to_txt(statistics, fn+'.txt')
     else:
         return g, statistics
-
-
-        
-
-
-    pass

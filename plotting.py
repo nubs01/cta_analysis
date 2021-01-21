@@ -1342,8 +1342,8 @@ def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None):
             row_id.extend([rid]*seqs.shape[0])
             # Sort by late state start time
             for trial in seqs:
-                if row['late_state'] in trial:
-                    sort_stat.append(np.where(trial==row['late_state'])[0][0])
+                if 2 in trial:
+                    sort_stat.append(np.min(np.where(trial==2)[0]))
                 else:
                     sort_stat.append(-1)
 
