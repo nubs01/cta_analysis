@@ -6,8 +6,9 @@ import seaborn as sns
 import pylab as plt
 from scipy.stats import sem
 import itertools as it
-from plotting import ORDERS, add_suplabels
+from plotting import ORDERS, add_suplabels, change_hue
 import analysis_stats as stats
+from scipy.ndimage.filters import gaussian_filter1d
 
 
 def plot_confusion_correlations(df, save_file=None):
@@ -203,8 +204,8 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
                                         ax=pal_ax, kind=kind,
                                         plot_points=plot_points)
 
-        g1.axhline(50, linestyle='--', alpha=0.5, color='k')
-        g2.axhline(33.3, linestyle='--', alpha=0.5, color='k')
+        #g1.axhline(50, linestyle='--', alpha=0.5, color='k')
+        #g2.axhline(33.3, linestyle='--', alpha=0.5, color='k')
 
         g1.set_ylabel(sg.replace('_', ' '))
         g1.legend_.remove()
@@ -221,8 +222,10 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
         else:
             g2.legend(bbox_to_anchor=[1.2,1.2,0,0])
 
-        g1_y = plot_sig_stars(g1, id_gh_df, cond_order)
-        g2_y = plot_sig_stars(g2, pal_gh_df, cond_order)
+        #n_cells = grp.groupby('grouping').size().to_dict()
+        n_cells = None
+        g1_y = plot_sig_stars(g1, id_gh_df, cond_order, n_cells=n_cells)
+        g2_y = plot_sig_stars(g2, pal_gh_df, cond_order, n_cells=n_cells)
 
     if save_file:
         fn, ext = os.path.splitext(save_file)
@@ -284,7 +287,8 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
         else:
             g1.legend_.remove()
 
-        g1_y = plot_sig_stars(g1, gh_df, cond_order)
+        n_cells = grp.groupby('grouping').size().to_dict()
+        g1_y = plot_sig_stars(g1, gh_df, cond_order, n_cells=n_cells)
 
     if save_file:
         fn, ext = os.path.splitext(save_file)
@@ -294,6 +298,31 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
         agg.write_dict_to_txt(statistics, save_file=fn2)
     else:
         return fig, axes, statistics
+
+def plot_timing_distributions(df, state='early', value_col='t_end', save_file=None):
+    df = df.copy()
+    df = df[df['valid']]
+    df['grouping'] = df.apply(lambda x: '%s_%s' % (x['exp_group'], x['cta_group']), axis=1)
+    groups = df.grouping.unique()
+    time_groups = df.time_group.unique()
+    time_groups = ORDERS['time_group']
+
+    g = sns.displot(data=df.query('state_group == @state'), x=value_col,
+                    hue='time_group', row='grouping', hue_order = time_groups,
+                    kde=True)
+    g.set_titles('{row_name}')
+    g.fig.set_size_inches([7.9, 8.2])
+    plt.tight_layout()
+    g.fig.subplots_adjust(top=0.85)
+    title = '%s state %s times' % (state, value_col.split('_')[-1])
+    g.fig.suptitle(title)
+
+    if save_file:
+        g.fig.savefig(save_file)
+        plt.close(g.fig)
+        return None
+    else:
+        return g
 
 
 def fix_coding_df(df):
@@ -388,8 +417,10 @@ def plot_coding_data(df, save_file=None, group_col='exp_group',
         else:
             g2.legend(bbox_to_anchor=[1.2,1.2,0,0])
 
-        g1_y = plot_sig_stars(g1, id_gh_df, cond_order)
-        g2_y = plot_sig_stars(g2, pal_gh_df, cond_order)
+        #n_cells = grp.groupby('grouping').size().to_dict()
+        n_cells = None
+        g1_y = plot_sig_stars(g1, id_gh_df, cond_order, n_cells=n_cells)
+        g2_y = plot_sig_stars(g2, pal_gh_df, cond_order, n_cells=n_cells)
 
     if save_file:
         fn, ext = os.path.splitext(save_file)
@@ -465,8 +496,6 @@ def plot_sig_stars(ax, posthoc_df, cond_order, n_cells=None):
         return
 
     truedf = posthoc_df[posthoc_df['reject']]
-    if truedf.empty:
-        return
 
     xpts = []
     ypts = []
@@ -480,9 +509,11 @@ def plot_sig_stars(ax, posthoc_df, cond_order, n_cells=None):
     xpts = [xpts[i] for i in idx]
     ypts = [ypts[i] for i in idx]
     pts = {cond: (x,y) for cond,x,y in zip(cond_order, xpts, ypts)}
+
     slines = [] # x1, x2, y1, y2
     sdists = []
     max_y = 0
+
     for i, row in truedf.iterrows():
         g1 = row['A']
         g2 = row['B']
@@ -513,6 +544,9 @@ def plot_sig_stars(ax, posthoc_df, cond_order, n_cells=None):
         for k,v in n_cells.items():
             x1, y1 = pts[k]
             ax.text(x1, .1*max_y, f'N={v}', horizontalalignment='center', color='white')
+
+    if truedf.empty:
+        return
 
     sdists = np.array(sdists)
     idx = list(np.argsort(sdists))
@@ -550,6 +584,7 @@ def plot_BIC(ho, proj, save_file=None):
 
 
 def fix_hmm_overview(ho, proj):
+    ho = ho.copy()
     df = proj._exp_info
     ho['exp_group'] = ho['exp_name'].map(df.set_index('exp_name')['exp_group'].to_dict())
     df['cta_group'] = df['CTA_learned'].apply(lambda x: 'CTA' if x else 'No CTA')
@@ -558,6 +593,84 @@ def fix_hmm_overview(ho, proj):
                                            if ('pre' in x or 'Train' in x)
                                            else 'postCTA')
     return ho
+
+
+def plot_hmm_trial_breakdown(df, proj, save_file=None):
+    df = fix_hmm_overview(df, proj)
+    df = df.query('exp_group != "Cre" or cta_group != "CTA"')
+    df = df.query('taste != "Water" and n_cells >= 3').copy()
+    # df = df.query('exclude == False')
+    df['grouping'] = df.apply(lambda x: '%s_%s\n%s' % (x['exp_group'],
+                                                      x['cta_group'],
+                                                      x['time_group']), axis=1) 
+    id_cols = ['exp_group', 'cta_group', 'time_group', 'grouping', 'taste']
+    df2 = df.groupby([*id_cols, 'state_presence']).size().reset_index()
+    df2 = df2.rename(columns={0: 'count'})
+    df2['percent'] = df2.groupby(['grouping', 'taste'])['count'].apply(lambda x: 100*x/sum(x))
+
+    o1 = ORDERS['exp_group']
+    o2 = ORDERS['cta_group']
+    o3 = ORDERS['time_group']
+    row_order = ORDERS['taste'].copy()
+    if 'Water' in row_order:
+        row_order.pop(row_order.index('Water'))
+
+    hue_order = ORDERS['state_presence']
+
+    cond_order = ['%s_%s\n%s' % x for x in it.product(o1, o2, o3)
+                  if (x[0] != "Cre" or x[1] != "CTA")]
+    statistics = {}
+    g = sns.catplot(data=df2, x='grouping', y='percent', row='taste',
+                    hue='state_presence', kind='bar', order=cond_order,
+                    row_order=row_order, hue_order=hue_order)
+    g.fig.set_size_inches([14,20])
+    g.set_xlabels('')
+
+    df3 = df.groupby([*id_cols, 'state_presence']).size()
+    df3 = df3.unstack('state_presence', fill_value=0).reset_index()
+    cond_y = [df2[df2.grouping == x].percent.max() + 5 for x in cond_order]
+
+    for taste, group in df3.groupby('taste'):
+        row = row_order.index(taste)
+        ax = g.axes[row, 0]
+        ax.set_ylabel(taste)
+        ax.set_title('')
+        tmp_stats = stats.chi2_contingency_with_posthoc(group,
+                                                        ['exp_group',
+                                                         'cta_group',
+                                                         'time_group'],
+                                                        hue_order,
+                                                        label_formatter='%s_%s\n%s')
+
+        sdf = pd.DataFrame.from_dict(tmp_stats, orient='index')
+        statistics[taste] = sdf
+        tsdf = sdf[sdf['reject']]
+        if len(tsdf) == 0:
+            continue
+
+        ytop = max(cond_y) + 5
+        for i, row in tsdf.iterrows():
+            if i == 'omnibus':
+                continue
+
+            x1 = cond_order.index(row['A'])
+            x2 = cond_order.index(row['B'])
+            ax.plot([x1, x1, x2, x2], [cond_y[x1], ytop, ytop, cond_y[x2]], color='k')
+            ss = '***' if row['pval'] < 0.001 else '**' if row['pval'] < 0.01 else '*'
+            mid = (x1 + x2)/2
+            ax.text(mid, ytop + 1, ss, fontsize=14)
+            ytop += 8
+
+    g.fig.suptitle('% trials containing HMM states')
+    #plt.tight_layout()
+    if save_file:
+        g.fig.savefig(save_file)
+        plt.close(g.fig)
+        fn, ext = os.path.splitext(save_file)
+        agg.write_dict_to_txt(statistics, fn+'.txt')
+    else:
+        return g, statistics
+
 
 def plot_taste_responsive_units(tasty_df, save_file=None):
     tasty_df = tasty_df[tasty_df['single_unit'] & (tasty_df['area'] == 'GC')].copy()
@@ -730,8 +843,71 @@ def plot_pal_responsive_units(pal_df, save_dir=None):
     else:
         return fig, axes, fig2, axes2
 
-def plot_total_spearman_correlation():
-    pass
+#def plot_mean_spearman_correlation(df, save_file=None):
+def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
+    data  = np.load(pal_file)
+    # labels are : exp_group, time_group, rec_dir, unit_num
+    l = list(data['labels'])
+    sr = data['spearman_r']
+    t = data['time']
+    index = pd.MultiIndex.from_tuples(l, names=['exp_group', 'time_group',
+                                                'rec_dir', 'unit_num'])
+    df = pd.DataFrame(sr, columns=t, index=index)
+    df = df.reset_index().melt(id_vars=['exp_group', 'time_group',
+                                        'rec_dir', 'unit_num'],
+                               value_vars=t,
+                               var_name='time_bin',
+                               value_name='spearman_r')
+
+    df = agg.apply_grouping_cols(df, proj)
+    # Drop Cre - No CTA
+    df = df.query('exp_group != "Cre" or cta_group != "CTA"')
+    df = df.copy()
+    df['grouping'] = df.apply(lambda x: '%s_%s' % (x['exp_group'], x['cta_group']), axis=1)
+    df['abs_r'] = df['spearman_r'].abs()
+    col_order = list(df.grouping.unique())
+    style_order = ORDERS['time_group']
+    colors = sns.color_palette()[:len(col_order)]
+    styles = ['-', '--', '-.', '.']
+    styles = styles[:len(style_order)]
+    markers = ['.', 'D', 'x', 'v']
+    markers = markers[:len(style_order)]
+    hues = [1, 0.4, 1.4]
+    fig = plt.figure(figsize=(15,8))
+    _ = add_suplabels(fig, 'Single Unit Mean Correlation to Palatability',
+                      'Time (ms)', "|Spearman's R|")
+    axes = []
+    for i, grouping in enumerate(col_order):
+        grp = df.query('grouping == @grouping')
+        ax = fig.add_subplot(1, len(col_order), i+1)
+        axes.append(ax)
+
+        for j, tg in enumerate(style_order):
+            tmp = grp.query('time_group == @tg').groupby('time_bin')['abs_r'].agg([np.mean, sem])
+            x = np.array(tmp.index)
+            x = x-x[0]
+            y = tmp['mean'].to_numpy()
+            y = gaussian_filter1d(y, 4)
+            err = tmp['sem'].to_numpy()
+            c = colors[j]
+            ax.fill_between(x, y + err, y - err, color=c, alpha=0.4)
+            ax.plot(x, y, color=c, linewidth=2, label=tg)
+            ax.set_xlim([x[0], x[-1]])
+
+        ax.set_title(grouping.replace('_', ' '))
+        if ax.is_last_col():
+            ax.legend(style_order, bbox_to_anchor=[1.2,1.2,0,0])
+
+    plt.tight_layout()
+    if save_file:
+        fig.savefig(save_file)
+        plt.close(fig)
+    else:
+        return fig, axes
+
+
+
+
 
 def plot_MDS(df, group_col='exp_group', save_file=None):
     order = ORDERS[group_col]
@@ -768,3 +944,66 @@ def plot_MDS(df, group_col='exp_group', save_file=None):
         agg.write_dict_to_txt(statistics, fn+'.txt')
     else:
         return g, statistics
+
+def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
+    df = all_units.query('single_unit == True and area == "GC" and exclude==False').copy()
+    ups = df.groupby(['exp_name', 'rec_group']).size().mean()
+    ups_sem = df.groupby(['exp_name', 'rec_group']).size().sem()
+    statistics = {'units per session': '%1.2f ± %1.2f' % (ups, ups_sem),
+                  'units per group': df.groupby('exp_group').size().to_dict()}
+    value_cols = ['baseline_firing', 'response_firing', 'norm_response_firing']
+    id_cols = ['exp_name', 'exp_group', 'rec_group', 'area', 'unit_type', 'time_group', 'cta_group']
+    df = df.melt(id_vars=id_cols, value_vars=value_cols,
+                 var_name='firing_type', value_name='firing_rate')
+    
+    order = ORDERS[group_col]
+    hue_order = ORDERS['time_group']
+    col_order = ORDERS['unit_type']
+    row_order = ['baseline_firing', 'response_firing', 'norm_response_firing']
+    cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))] 
+    df['group_col'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
+
+    # plot baseline and response firing rates 
+    g = sns.catplot(data=df, x=group_col, y='firing_rate', hue='time_group',
+                    col='unit_type', row='firing_type', kind='bar', order=order,
+                    hue_order=hue_order, col_order=col_order,
+                    row_order=row_order, sharey=False)
+    g.fig.set_size_inches((15, 12))
+    for (ft, ut), group in df.groupby(['firing_type', 'unit_type']):
+        row = row_order.index(ft)
+        col = col_order.index(ut)
+        ax = g.axes[row,col]
+        if ax.is_first_row():
+            ax.set_title(ut)
+        else:
+            ax.set_title('')
+
+        if ax.is_first_col():
+            ax.set_ylabel(' '.join(ft.split('_')[:-1]))
+        else:
+            ax.set_ylabel('')
+
+        n_cells = group.groupby('group_col').size().to_dict()
+        kw_s, kw_p, gh_df = stats.kw_and_gh(group, 'group_col', 'firing_rate')
+        tmp = {'KW Stat': kw_s, 'KW p': kw_p, 'Games-Howell posthoc': gh_df}
+        if ft in statistics.keys():
+            statistics[ft][ut] = tmp
+        else:
+            statistics[ft] = {ut: tmp}
+
+        plot_sig_stars(ax, gh_df, cond_order, n_cells=n_cells)
+
+    g.fig.subplots_adjust(top=0.85)
+    g.fig.suptitle('Unit Firing Rates (Hz)')
+    if save_file:
+        fn, ext = os.path.splitext(save_file)
+        fn = fn + '.txt'
+        g.fig.savefig(save_file)
+        agg.write_dict_to_txt(statistics, fn)
+        plt.close(g.fig)
+    else:
+        return g, statistics
+
+
+
+

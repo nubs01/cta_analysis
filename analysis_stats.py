@@ -126,6 +126,32 @@ def chi2_contingency_for_taste_responsive_cells(df, alpha=0.05,
 
     return statistics
 
+def chi2_contingency_with_posthoc(df, group_cols, value_cols, alpha=0.05,
+                                  label_formatter='%s_%s\n%s'):
+    s, p, dof, expected = chi2_contingency(df[value_cols].to_numpy())
+    reject = (p <= alpha)
+    statistics = {'omnibus': {'A': 'all', 'B': 'all', 'statistic': s,
+                              'pval': p, 'dof': dof, 'reject': reject}}
+    df2 = df.set_index(group_cols)
+    tmp = [df[x].unique() for x in group_cols]
+    pairs = list(it.combinations(it.product(*tmp), 2))
+    pairs = [[(x1, y1, z1), (x2, y2, z2)] for (x1, y1, z1), (x2, y2, z2)
+             in pairs if ((x1 == x2) & (y1 == y2)) or z1==z2]
+    pairs = [[x,y] for x,y in pairs if x in df2.index and y in df2.index]
+    n_pairs = len(pairs)
+    for i, pair in enumerate(pairs):
+        dat = df2.loc[pair, value_cols]
+        dat = dat.loc[:, (dat!=0).any(axis=0)]
+        s, p, d, ex = chi2_contingency(dat.to_numpy())
+        # Bonferroni correction
+        p = p * n_pairs
+        reject = (p<=alpha)
+        tmp = {'A': label_formatter % pair[0], 'B': label_formatter % pair[1],
+               'statistic': s, 'pval': p, 'dof': d, 'reject': reject}
+        statistics[i] = tmp
+
+    return statistics
+
 
 def permutation_test(labels, data, alpha=0.05, group_col=0, n_boot=1000, n_cores=1):
     '''data should be for a single tastant and 2 groups

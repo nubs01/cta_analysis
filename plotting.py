@@ -29,7 +29,9 @@ ORDERS = {'exp_group': ['GFP', 'Cre'],
           'taste': ['Water', 'NaCl', 'Citric Acid', 'Quinine', 'Saccharin'],
           'time_group': ['preCTA', 'postCTA'],
           'state_group': ['early', 'late'],
-          'MDS_time': ['Early (0-750ms)', 'Late (750-1500ms)']}
+          'MDS_time': ['Early (0-750ms)', 'Late (750-1500ms)'],
+          'unit_type': ['pyramidal', 'interneuron'],
+          'state_presence': ['both', 'early_only', 'late_only', 'neither']}
 
 def plot_unit_waveforms(rec_dir, unit, ax=None, save_file=None):
     if ax is None:
@@ -615,8 +617,12 @@ def plot_aggregate_spearman(pal_df, save_file):
         tmp['spearman_peak'].apply(lambda x: sns.kdeplot(x, ax=axes[1,i]))
         axes[0,i].set_title(name)
         if i > 0:
-            axes[0, i].get_legend().remove()
-            axes[1, i].get_legend().remove()
+            leg = axes[0,i].get_legend()
+            if leg:
+                leg.remove()
+            leg = axes[1,i].get_legend()
+            if leg:
+                leg.remove()
         else:
             axes[0,i].set_ylabel('Peak Spearman R')
             axes[1,i].set_ylabel('Peak Corr Time')
@@ -638,8 +644,12 @@ def plot_aggregate_pearson(pal_df, save_file):
         tmp['pearson_peak'].apply(lambda x: sns.kdeplot(x, ax=axes[1,i]))
         axes[0,i].set_title(name)
         if i > 0:
-            axes[0, i].get_legend().remove()
-            axes[1, i].get_legend().remove()
+            leg = axes[0,i].get_legend()
+            if leg:
+                leg.remove()
+            leg = axes[1,i].get_legend()
+            if leg:
+                leg.remove()
         else:
             axes[0,i].set_ylabel('Peak Pearson R')
             axes[1,i].set_ylabel('Peak Corr Time')

@@ -6,7 +6,7 @@ from tqdm import tqdm
 from sklearn.decomposition import PCA
 from scipy.ndimage.filters import gaussian_filter1d
 from scipy.stats import sem
-from blechpy import project, experiment, dataset
+from blechpy import project, experiment, dataset, load_dataset, load_experiment
 from blechpy.analysis import held_unit_analysis as hua
 from blechpy.analysis import spike_analysis as sas
 from blechpy.dio import h5io
@@ -21,7 +21,9 @@ ELECTRODES_IN_GC = {'RN5': 'right', 'RN10': 'both', 'RN11': 'right',
                     'RN15': 'both', 'RN16': 'both', 'RN17': 'both',
                     'RN18': 'both', 'RN19': 'right', 'RN20': 'right',
                     'RN21': 'right', 'RN22': 'both', 'RN23': 'right',
-                    'RN24': 'both', 'RN25': 'both'}
+                    'RN24': 'both', 'RN25': 'both', 'RN26': 'both',
+                    'RN27': 'both', 'RN28': 'both', 'RN29': 'both',
+                    'RN30': 'both', 'RN31': 'both'}
 
 def get_all_units(proj):
     # Columns:
@@ -50,7 +52,7 @@ def get_all_units(proj):
                 # TODO: Make more elegant, ask for input
                 raise ValueError('Rec %s does not fit into a group' % rec_name)
 
-            dat = blechpy.load_dataset(rec_dir)
+            dat = load_dataset(rec_dir)
             units = dat.get_unit_table().copy()
             units['exp_name'] = exp_name
             units['exp_group'] = exp_group
@@ -332,7 +334,7 @@ def fix_palatability(proj, pal_map=None):
     for exp_dir in tqdm(exp_dirs):
         exp = blechpy.load_experiment(exp_dir)
         for rd in exp.recording_dirs:
-            dat = blechpy.load_dataset(rd)
+            dat = load_dataset(rd)
             dat.dig_in_mapping['palatability_rank'] = dat.dig_in_mapping.name.map(pal_map)
             h5io.write_digital_map_to_h5(dat.h5_file, dat.dig_in_mapping, 'in')
             dat.save()
@@ -357,7 +359,7 @@ def set_electrode_areas(proj, el_in_gc={}):
             el = None
 
         for rec in exp.recording_dirs:
-            dat = blechpy.load_dataset(rec)
+            dat = load_dataset(rec)
             print('Fixing %s...' % dat.data_name)
             em = dat.electrode_mapping
             em['area'] = 'GC'
@@ -435,3 +437,65 @@ def write_dict_to_txt(dat, save_file=None, tabs=0):
             f.write('\n'.join(out))
     else:
         return out
+
+
+def apply_grouping_cols(df, proj):
+    if 'exclude' not in proj._exp_info.columns:
+        proj._exp_info['exclude'] = proj._exp_info.apply(apply_exclude, axis=1)
+        proj.save()
+
+    base_cols = ['exp_name', 'exp_dir', 'rec_dir']
+    cols = list(df.columns)
+    if not any([x in cols for x in base_cols]):
+        return df
+
+    if 'exp_name' not in cols:
+        if 'exp_dir' in cols:
+            def exp_name(ed):
+                exp = load_experiment(ed)
+                return exp.data_name
+            from_col = 'exp_dir'
+        elif 'rec_dir' in cols:
+            def exp_name(rd):
+                dat = load_dataset(rd)
+                en = dat.data_name.split('_')[0]
+                if en == 'RN5b':
+                    en = 'RN5'
+                return en
+            from_col = 'rec_dir'
+
+        df['exp_name'] = df[from_col].apply(exp_name)
+
+    map_df = proj._exp_info.set_index('exp_name')
+    df['cta_group'] = df['exp_name'].map(map_df['cta_group'].to_dict())
+    df['exp_group'] = df['exp_name'].map(map_df['exp_group'].to_dict())
+    df['exclude'] = df.apply(apply_exclude, axis=1)
+
+    if 'rec_group' in df.columns:
+        col = 'rec_group'
+    elif 'rec_dir' in df.columns:
+        col = 'rec_dir'
+    else:
+        return df
+
+    def time_group(x):
+        if 'pre' in x or 'Train' in x:
+            return 'preCTA'
+        elif 'post' in x or 'Test' in x:
+            return 'postCTA'
+        else:
+            return None
+
+    df['time_group'] = df[col].apply(time_group)
+    return df
+
+
+def apply_exclude(row):
+    '''exclude GFP - No CTA and Cre - CTA'''
+    if (row['exp_group'] == 'GFP' and row['cta_group'] == 'No CTA'):
+        return True
+
+    if (row['exp_group'] == 'Cre' and row['cta_group'] == 'CTA'):
+        return True
+
+    return False
