@@ -424,7 +424,7 @@ def test_anova_assumptions(df, dv, between, within):
 def kw_and_gh(df, group_col, value_col):
     df = df.dropna(subset=[group_col, value_col])
     dat = [group[value_col].values for _, group in df.groupby(group_col)]
-    ks_stat, ks_p = kruskal(*dat)
+    kw_stat, kw_p = kruskal(*dat)
     try:
         gameshowell_df = pg.pairwise_gameshowell(data=df, dv=value_col, between=group_col).round(4)
         def apply_rejection(pval):
@@ -439,4 +439,4 @@ def kw_and_gh(df, group_col, value_col):
         print(f'kruskal wallis p: {ks_p}, games-howell failed')
         print(ex)
 
-    return ks_stat, ks_p, gameshowell_df
+    return kw_stat, kw_p, gameshowell_df

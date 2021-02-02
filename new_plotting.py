@@ -518,11 +518,11 @@ def plot_sig_stars(ax, posthoc_df, cond_order, n_cells=None):
         g1 = row['A']
         g2 = row['B']
         p = row['pval']
-        if p <0.001:
+        if p <=0.001:
             ss = '***'
-        elif p<0.01:
+        elif p<=0.01:
             ss='**'
-        elif p<0.05:
+        elif p<=0.05:
             ss='*'
         else:
             continue
@@ -865,6 +865,8 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     df = df.copy()
     df['grouping'] = df.apply(lambda x: '%s_%s' % (x['exp_group'], x['cta_group']), axis=1)
     df['abs_r'] = df['spearman_r'].abs()
+    df['resp_time'] = df['time_bin'].apply(lambda x: 'Early (0-750ms)' if x < 750
+                                           else 'Late (750-2000ms)')
     col_order = list(df.grouping.unique())
     style_order = ORDERS['time_group']
     colors = sns.color_palette()[:len(col_order)]
@@ -887,7 +889,7 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
             x = np.array(tmp.index)
             x = x-x[0]
             y = tmp['mean'].to_numpy()
-            y = gaussian_filter1d(y, 4)
+            y = gaussian_filter1d(y, 3)
             err = tmp['sem'].to_numpy()
             c = colors[j]
             ax.fill_between(x, y + err, y - err, color=c, alpha=0.4)
@@ -899,14 +901,58 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
             ax.legend(style_order, bbox_to_anchor=[1.2,1.2,0,0])
 
     plt.tight_layout()
+
+    df['grouping'] = df.apply(lambda x: '%s_%s\n%s' % (x['exp_group'],
+                                                       x['cta_group'],
+                                                       x['time_group']), axis=1)
+    df['comp_grouping'] = df.apply(lambda x: '%s_%s' % (x['grouping'], x['resp_time']), axis=1)
+    o1 = ORDERS['exp_group']
+    o2 = ORDERS['cta_group']
+    o3 = ORDERS['time_group']
+    o4 = ['Early (0-750ms)', 'Late (750-2000ms)']
+    g_order = [f'{x}_{y}\n{z}' for x,y,z in it.product(o1,o2,o3)]
+    cond_order = [f'{x}_{y}' for x,y in it.product(g_order, o4)]
+    g_order = [x for x in g_order if x in df.grouping.unique()]
+    cond_order = [x for x in cond_order if x in df.comp_grouping.unique()]
+    fig2, ax = plt.subplots(figsize=(14,8))
+    g = sns.barplot(data=df, x='grouping', y='abs_r', hue='resp_time',
+                    order=g_order, hue_order=o4, ax=ax)
+    kw_s, kw_p, gh_df = stats.kw_and_gh(df, 'comp_grouping', 'abs_r')
+    statistics = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell posthoc': gh_df}
+    # Slim down gh_df to only comparisons I care about
+    valid_gh = []
+    for i,row in gh_df.iterrows():
+        a = row['A']
+        b = row['B']
+        s1 = a.split('\n')
+        s1 = np.array([s1[0], *s1[1].split('_')])
+        s2 = b.split('\n')
+        s2 = np.array([s2[0], *s2[1].split('_')])
+        if sum(s1==s2) == 2 and s1[0] == s2[0]:
+            valid_gh.append(row)
+
+    valid_gh = pd.DataFrame(valid_gh)
+    plot_sig_stars(ax, valid_gh, cond_order)
+    ax.set_xlabel('')
+    ax.set_ylabel("|Spearman's R|")
+    ax.set_title('Mean Palatability Correlation\n'
+                 'only showing small subset of significant differences')
+    tmp = df.groupby(['exp_name', 'exp_group', 'time_group'])['unit_num']
+    tmp = tmp.agg(lambda x: len(np.unique(x)))
+    tmp = tmp.groupby(['exp_group', 'time_group']).sum().reset_index()
+    tmp = tmp.rename(columns={'unit_num': 'n_cells'})
+    statistics['n_cells'] = tmp
+
     if save_file:
         fig.savefig(save_file)
         plt.close(fig)
+        fn, ext = os.path.splitext(save_file)
+        fn = fn + '-comparison'
+        fig2.savefig(fn + '.svg')
+        agg.write_dict_to_txt(statistics, fn + '.txt')
+        plt.close(fig2)
     else:
-        return fig, axes
-
-
-
+        return fig, fig2, statistics
 
 
 def plot_MDS(df, group_col='exp_group', save_file=None):

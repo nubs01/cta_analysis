@@ -2607,6 +2607,8 @@ def consolidate_results():
              os.path.join(d1, 'taste_responsive-stats.txt'),
              # Pal responsive
              os.path.join(d1, 'Mean_Spearman.svg'),
+             os.path.join(d1, 'Mean_Spearman-comparison.svg'),
+             os.path.join(d1, 'Mean_Spearman-comparison.txt'),
              os.path.join(d1, 'palatability_spearman_corr.svg'),
              os.path.join(d1, 'palatability_spearman_corr.txt'),
              # Taste discriminative
