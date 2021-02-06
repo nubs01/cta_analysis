@@ -9,9 +9,11 @@ from sklearn.manifold import MDS
 import itertools as itt
 from scipy.stats import sem
 from uncertainty import I
+from scipy.spatial.distance import euclidean
 
 def apply_pca_analysis(df, params):
-    '''df is held_units dataframe grouped by exp_name and held_over
+    '''df is held_units dataframe grouped by exp_name, exp_group, time_group
+    only contains units held over preCTA or postCTA, no units held from ctaTrain to ctaTest
     
     Parameters
     ----------
@@ -73,6 +75,27 @@ def apply_pca_analysis(df, params):
     out_df['n_cells'] = n_cells
     out_df[['PC1', 'PC2']] = pd.DataFrame(pc_values)
     out_df[['MDS1','MDS2']] = pd.DataFrame(md_values)
+
+    # Compute the MDS distance metric using the full dimensional solution
+    # For each point computes distance to mean Quinine / distance to mean NaCl
+    mds = MDS(n_components=rates.shape[1])
+    mds_values = mds.fit_transform(rates)
+    n_idx = np.where(labels[:,0] == 'NaCl')[0]
+    q_idx = np.where(labels[:,0] == 'Quinine')[0]
+    q_mean = np.mean(mds_values[q_idx,:], axis=0)
+    n_mean = np.mean(mds_values[n_idx,:], axis=0)
+    dist_metric = [euclidean(x, q_mean)/euclidean(x, n_mean) for x in mds_values]
+    assert len(dist_metric) == rates.shape[0], 'computed distances over wrong axis'
+    out_df['dQ_v_dN_fullMDS'] = pd.DataFrame(dist_metric)
+    
+    # Do it again with raw rates
+    q_mean = np.mean(rates[q_idx, :], axis=0)
+    n_mean = np.mean(rates[n_idx, :], axis=0)
+    raw_metric = [euclidean(x, q_mean)/euclidean(x, n_mean) for x in rates]
+    assert len(raw_metric) == rates.shape[0], 'computed distances over wrong axis'
+    out_df['dQ_v_dN_rawRates'] = pd.DataFrame(raw_metric)
+
+
     return out_df
 
 
@@ -265,3 +288,7 @@ def get_pca_data(rec, units, bin_size, step=None, t_start=None, t_end=None, base
     fr_lbls = np.array(fr_lbls)
     return fr_time, fr_out, fr_lbls
 
+
+def fulldim_mds_analysis(df):
+    """ Should be receiving held_units grouped by exp_name, exp_group, time_group
+    """

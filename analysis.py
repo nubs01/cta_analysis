@@ -546,6 +546,7 @@ class ProjectAnalysis(object):
                                     'time', 'taste','trial', 'n_cells', 'PC1',
                                     'PC2', 'MDS1', 'MDS2'])
         dist_metrics = agg.apply_grouping_cols(dist_metrics, self.project)
+        pc_data = agg.apply_grouping_cols(pc_data, self.project)
         feather.write_dataframe(pc_data, pc_data_file)
         feather.write_dataframe(dist_data, dist_data_file)
         feather.write_dataframe(dist_metrics, other_dist_file)
@@ -572,6 +573,9 @@ class ProjectAnalysis(object):
         fn = os.path.join(mds_dir, 'Saccharin_MDS_distances.svg')
         nplt.plot_MDS(metric_data, save_file=fn)
 
+        fn = os.path.join(mds_dir, 'FullDim_MDS_distances.svg')
+        nplt.plot_full_dim_MDS(pc_data, save_file=fn)
+
         # Change exp group to CTA learning and re-plot
         learn_map = self.project._exp_info.set_index('exp_name')
         def foo(x):
@@ -590,6 +594,11 @@ class ProjectAnalysis(object):
     def fix_areas(self):
         agg.set_electrode_areas(self.project, el_in_gc=ELECTRODES_IN_GC)
 
+    def plot_saccharin_consumption(self):
+        save_dir = self.save_dir
+        fn = os.path.join(save_dir, 'Saccharin_consumption.svg')
+        nplt.plot_saccharin_consumption(self.project, fn)
+
     def run(self, overwrite=False):
         #self.fix_areas()
         #self.fix_palatability()
@@ -600,6 +609,7 @@ class ProjectAnalysis(object):
         self.make_aggregate_single_unit_plots()
         self.pca_analysis(overwrite=overwrite)
         self.plot_pca_data()
+        self.plot_saccharin_consumption()
 
 
 def apply_info_from_rec_dir(row):
@@ -2595,10 +2605,12 @@ def consolidate_results():
     d5 = os.path.join(HA.save_dir, 'timing_analysis')
     d6 = os.path.join(PA.save_dir, 'held_unit_response_changes')
     d7 = os.path.join(d6, 'Held_Unit_Plots')
+    d8 = os.path.join(PA.save_dir, 'pca_analysis')
     files = [
              os.path.join(d1, 'unit_taste_responsivity.feather'),
              os.path.join(d1, 'unit_pal_discrim.feather'),
              os.path.join(d1, 'palatability_data.npz'),
+             os.path.join(d8, 'pc_data.feather'),
              # Taste responsive
              os.path.join(d1, 'unit_firing_rates.svg'),
              os.path.join(d1, 'unit_firing_rates.txt'),
@@ -2619,6 +2631,8 @@ def consolidate_results():
              # MDS analysis
              os.path.join(d2, 'Saccharin_MDS_distances.svg'),
              os.path.join(d2, 'Saccharin_MDS_distances.txt'),
+             os.path.join(d2, 'FullDim_MDS_distances.svg'),
+             os.path.join(d2, 'FullDim_MDS_distances.txt'),
              # HMM identity and palatability coding
              os.path.join(d3, 'coding_correlations-exclude.svg'),
              os.path.join(d3, 'coding_comparison-exclude.svg'),
@@ -2653,7 +2667,9 @@ def consolidate_results():
              os.path.join(d7, 'Saccharin_responses_changed-exclude.svg'),
              os.path.join(d7, 'Saccharin_responses_changed-Cre_v_BadGFP.svg'),
              os.path.join(d7, 'Saccharin_responses_changed-GFP_v_GFP.svg'),
-             os.path.join(HA.save_dir, 'hmm_trial_breakdown.feather')
+             os.path.join(HA.save_dir, 'hmm_trial_breakdown.feather'),
+             os.path.join(PA.save_dir, 'Saccharin_consumption.svg'),
+             os.path.join(PA.save_dir, 'Saccharin_consumption.txt')
             ]
 
     ext_map = {'feather': 'data', 'npy': 'data', 'npz': 'data', 'p': 'data',

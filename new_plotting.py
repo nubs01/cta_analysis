@@ -499,16 +499,35 @@ def plot_sig_stars(ax, posthoc_df, cond_order, n_cells=None):
 
     xpts = []
     ypts = []
-    for p, cond in zip(ax.patches, cond_order):
-        x = p.get_x() + p.get_width()/2
-        y = p.get_height()
-        xpts.append(x)
-        ypts.append(y)
+    if len(ax.patches) == 0:
+        labels = ax.get_xticklabels()
+        #xpts = {x.get_text(): x.get_position()[0] for x in labels}
+        xpts = {x: i for i,x in enumerate(cond_order)}
+        ypts = {}
+        pts = {}
+        for l in ax.lines:
+            xd = l.get_xdata()
+            yd = l.get_ydata()
+            for x,y in zip(xd, yd):
+                if x in ypts.keys():
+                    ypts[x] = np.max((ypts[x], y))
+                else:
+                    ypts[x] = y
 
-    idx = np.argsort(xpts)
-    xpts = [xpts[i] for i in idx]
-    ypts = [ypts[i] for i in idx]
-    pts = {cond: (x,y) for cond,x,y in zip(cond_order, xpts, ypts)}
+        for k,x in xpts.items():
+            pts[k] = (x, ypts[x])
+
+    else:
+        for p, cond in zip(ax.patches, cond_order):
+            x = p.get_x() + p.get_width()/2
+            y = p.get_height()
+            xpts.append(x)
+            ypts.append(y)
+
+        idx = np.argsort(xpts)
+        xpts = [xpts[i] for i in idx]
+        ypts = [ypts[i] for i in idx]
+        pts = {cond: (x,y) for cond,x,y in zip(cond_order, xpts, ypts)}
 
     slines = [] # x1, x2, y1, y2
     sdists = []
@@ -991,6 +1010,78 @@ def plot_MDS(df, group_col='exp_group', save_file=None):
     else:
         return g, statistics
 
+def plot_full_dim_MDS(df, save_file=None):
+    df = df.copy()
+    df['time'] = df.time.apply(lambda x: x.split(' ')[0])
+    df['grouping'] = df.apply(lambda x: '%s_%s' % (x['exp_group'],
+                                                   x['cta_group']),
+                              axis=1)
+    df['plot_group'] = df.apply(lambda x: '%s\n%s' % (x['grouping'],
+                                                      x['time']),
+                                axis=1)
+    df['comp_group'] = df.apply(lambda x: '%s_%s' % (x['plot_group'],
+                                                     x['time_group']),
+                                axis=1)
+
+    df = df.query('(exp_group != "Cre" or cta_group != "CTA") '
+                  'and taste != "Water"')
+
+    o1 = ORDERS['exp_group']
+    o2 = ORDERS['cta_group']
+    o3 = ['Early', 'Late']
+    o4 = ORDERS['time_group']
+    plot_order = ['%s_%s\n%s' % (x,y,z) for z,x,y in it.product(o3,o1,o2)]
+    plot_order = [x for x in plot_order if x in df['plot_group'].unique()]
+    comp_order = ['%s_%s' % (x,y) for x,y in it.product(plot_order, o4)]
+    row_order = ORDERS['taste'].copy()
+    if 'Water' in row_order:
+        _ = row_order.pop(row_order.index('Water'))
+
+    g = sns.catplot(data=df, row='taste', x='plot_group',
+                    y='dQ_v_dN_fullMDS', kind='bar', hue='time_group',
+                    order=plot_order,
+                    hue_order=o4,
+                    row_order=row_order,
+                    sharey=False)
+    statistics = {}
+    for tst, group in df.groupby('taste'):
+        row = row_order.index(tst)
+        ax = g.axes[row, 0]
+        ax.set_title('')
+        ax.set_ylabel(tst)
+        ax.set_xlabel('')
+        kw_s, kw_p, gh_df = stats.kw_and_gh(group, 'comp_group', 'dQ_v_dN_fullMDS')
+        tmp = {'Kruskal-Wallis stat': kw_s, 'Kruskal-Wallis p-val': kw_p,
+               'Games-Howell posthoc': gh_df}
+        statistics[tst] = tmp
+        valid_comp = []
+        for i, row in gh_df.iterrows():
+            A = row['A'].split('\n')
+            B = row['B'].split('\n')
+            A = [y for x in A for y in x.split('_')]
+            B = [y for x in B for y in x.split('_')]
+            #if (A[0] == B[0] and A[1] == B[1]) or (A[3] == B[3]):
+            if A[2] == B[2]:
+                valid_comp.append(row)
+
+        valid_comp = pd.DataFrame(valid_comp)
+        plot_sig_stars(ax, valid_comp, comp_order)
+
+    g.fig.set_size_inches(16,18)
+    g.fig.subplots_adjust(top=0.9)
+    g.fig.suptitle('Relative MDS distances (dQ/dN)\nFull Dimension Solution')
+    #g.legend.set_bbox_to_anchor([1.2,1.2,0,0])
+    #plt.tight_layout()
+    if save_file:
+        g.fig.savefig(save_file)
+        plt.close(g.fig)
+        fn, ext = os.path.splitext(save_file)
+        agg.write_dict_to_txt(statistics, fn+'.txt')
+    else:
+        return g, statistics
+
+
+
 def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
     df = all_units.query('single_unit == True and area == "GC" and exclude==False').copy()
     ups = df.groupby(['exp_name', 'rec_group']).size().mean()
@@ -1050,6 +1141,41 @@ def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
     else:
         return g, statistics
 
+
+def plot_saccharin_consumption(proj, save_file=None):
+    df = proj._exp_info.copy()
+    df['saccharin_consumption'] = df.saccharin_consumption.apply(lambda x: 100*x)
+    df['grouping'] = df.apply(lambda x: '%s_%s' % (x['exp_group'], x['cta_group']), axis=1)
+    o1 = ORDERS['exp_group']
+    o2 = ORDERS['cta_group']
+    order = ['%s_%s' % x for x in it.product(o1,o2)]
+    _ = order.pop(order.index('Cre_CTA'))
+    df = df.query('grouping != "Cre_CTA"')
+    #df = df.query('exclude == False')
+    order = [x for x in order if x in df.grouping.unique()]
+    order = ['GFP_CTA', 'Cre_No CTA', 'GFP_No CTA']
+    df = df.dropna()
+    fig, ax = plt.subplots(figsize=(8.5,7))
+    g = sns.boxplot(data=df, x='grouping', y='saccharin_consumption', order=order, ax=ax)
+    n_cells = df.groupby('grouping').size().to_dict()
+    kw_s, kw_p, gh_df = stats.kw_and_gh(df, 'grouping', 'saccharin_consumption')
+    out_stats = {'counts': n_cells, 'Kruskal-Wallis Stat': kw_s, 'Kruskal-Wallis p-val': kw_p,
+                 'Games-Howell posthoc': gh_df}
+    g.set_xlabel('')
+    g.set_ylabel('% Saccharin Consumption')
+    g.set_title('Saccharin Consumption\nrelative to mean water consumption')
+    plot_sig_stars(g, gh_df, cond_order=order, n_cells=n_cells)
+    g.axhline(80, linestyle='--', color='k', alpha=0.6)
+    g.set_yscale('log')
+    g.set_yticklabels(g.get_yticks(minor=True), minor=True)
+
+    if save_file:
+        fig.savefig(save_file)
+        fn, ext = os.path.splitext(save_file)
+        agg.write_dict_to_txt(out_stats, fn+'.txt')
+        plt.close(fig)
+    else:
+        return g, out_stats
 
 
 
