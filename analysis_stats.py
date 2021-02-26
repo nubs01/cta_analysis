@@ -3,6 +3,7 @@ import pandas as pd
 import itertools as it
 from joblib import Parallel, delayed, cpu_count
 from scipy.stats import t, fisher_exact, shapiro, levene, chisquare, kruskal, chi2_contingency
+from scipy.optimize import curve_fit
 from sklearn.model_selection import LeavePOut
 from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
@@ -436,7 +437,42 @@ def kw_and_gh(df, group_col, value_col):
         gameshowell_df['reject'] = gameshowell_df['pval'].apply(apply_rejection)
     except Exception as ex:
         gameshowell_df = None
-        print(f'kruskal wallis p: {ks_p}, games-howell failed')
+        print(f'kruskal wallis p: {kw_p}, games-howell failed')
         print(ex)
 
     return kw_stat, kw_p, gameshowell_df
+
+def get_diff_df(df, group_cols, diff_col, value_col):
+    diff_groups = df[diff_col].unique()
+    assert len(diff_groups) == 2, 'Expected 2 comparison groups'
+    df = df.copy()
+    df = df.dropna(subset=[value_col])
+    df2 = df.pivot_table(columns=diff_col, values=value_col, index=group_cols,
+                         aggfunc=[np.mean, np.std, len]).reset_index()
+    out = []
+    for i, row in df2.iterrows():
+        dm = -np.diff(row['mean'])[0]
+        sem = np.sqrt(np.sum(row['std']**2)/np.sum(row['len']))
+        row['mean_diff'] = dm
+        row['sem_diff'] = sem
+        out.append(row)
+
+    keep_cols = [*group_cols, 'mean_diff', 'sem_diff']
+    keep_cols = [(x, '') for x in keep_cols]
+    out = pd.DataFrame(out)
+    out = out[keep_cols]
+    out.columns = out.columns.droplevel(1)
+    return out
+
+
+def gaussian_fit(x, y):
+    pars, cov = curve_fit(f=gaussian, xdata=x, ydata=y, p0=[1000,100], bounds=(0, 2000))
+    stdevs = np.sqrt(np.diag(cov))
+    y_fit = gaussian(x, *pars)
+    ss_res = np.sum((y - y_fit) ** 2)
+    ss_tot = np.sum((y - np.mean(y)) ** 2)
+    r2 = 1 - (ss_res/ss_tot)
+    return pars, stdevs, r2
+
+def gaussian(x, mu, sig):
+        return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))

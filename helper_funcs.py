@@ -126,7 +126,7 @@ def plot_held_percent_changed_new(df, group_col='exp_group', taste='Saccharin',
                     horizontalalignment='center', fontsize=14)
 
         g.set_xlim([df2.time.min(), df2.time.max()])
-        g.set_ylim([0, ymax])
+        g.set_ylim([0, 45])
         x = df2.time.min() + 50
         y = 0.9*ymax
         N = group['n_cells'].unique()[0]

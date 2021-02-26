@@ -39,13 +39,13 @@ ELECTRODES_IN_GC = {'RN5': 'right', 'RN10': 'both', 'RN11': 'right',
 
 ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 750, 'alpha': 0.05},
                    'pal_responsive': {'win_size': 250, 'step_size': 25,
-                                      'time_win': [0, 2000], 'alpha': 0.05},
+                                      'time_win': [-250, 2000], 'alpha': 0.05},
                    'baseline_comparison': {'win_size': 1500, 'alpha': 0.01},
                    'response_comparison': {'win_size': 250, 'step_size': 250,
                                            'time_win': [0, 1500], 'alpha': 0.05,
                                            'n_boot':10000},
                    'psth': {'win_size': 250, 'step_size': 25, 'smoothing_win': 3,
-                            'plot_window': [-1000, 1500]},
+                            'plot_window': [-1000, 2000]},
                    'pca': {'win_size': 750, 'step_size': 750,
                            'smoothing_win': 3,
                            'plot_window': [-500, 2000], 'time_win': [0, 1500]}}
@@ -276,17 +276,28 @@ class ProjectAnalysis(object):
                     elif not np.array_equal(dtime, diff_time):
                         raise ValueError('Times dont match')
 
-                    for tst in tastes:
+                    for i, tst in enumerate(tastes):
                         plot_dir = os.path.join(save_dir, 'Held_Unit_Plots', tst)
+                        new_plot_dir = os.path.join(plot_dir, 'clean_plots')
                         if not os.path.isdir(plot_dir):
                             os.makedirs(plot_dir)
 
+                        if not os.path.isdir(new_plot_dir):
+                            os.makedirs(new_plot_dir)
+
                         fig_file = os.path.join(plot_dir, 'Held_Unit_%s-%s.svg' % (held_unit_name, tst))
+                        new_fn = os.path.join(new_plot_dir,
+                                              'Held_Unit_%s-%s.svg' %
+                                              (held_unit_name, tst))
 
                         plt.plot_held_unit_comparison(rec1, unit1, rec2, unit2,
-                                                      pvs[0], params, held_unit_name,
+                                                      pvs[i], params, held_unit_name,
                                                       exp_name, exp_group, tst,
                                                       save_file=fig_file)
+                        nplt.plot_held_unit_comparison(rec1, unit1, rec2, unit2,
+                                                       pvs[i], params, held_unit_name,
+                                                       exp_name, exp_group, tst,
+                                                       save_file=new_fn)
 
             labels = np.vstack(labels) # exp_group, exp_name, cta_group, held_unit_name, taste
             pvals = np.vstack(pvals)
@@ -572,6 +583,9 @@ class ProjectAnalysis(object):
         metric_data = metric_data.query('exclude == False')
         fn = os.path.join(mds_dir, 'Saccharin_MDS_distances.svg')
         nplt.plot_MDS(metric_data, save_file=fn)
+        fn = os.path.join(mds_dir, 'Saccharin_MDS_distances-alternate.svg')
+        nplt.plot_MDS(metric_data, save_file=fn, ylabel='dQ-dN',
+                      value_col='MDS_dQ_minus_dN', kind='bar')
 
         fn = os.path.join(mds_dir, 'FullDim_MDS_distances.svg')
         nplt.plot_full_dim_MDS(pc_data, save_file=fn)
@@ -762,7 +776,7 @@ def apply_discrim_and_pal(row, params, save_file, plot_dir):
         psth_fn = '%s_%s_psth.svg' % (rec_name, unit_name)
         psth_file = os.path.join(plot_dir, 'PSTHs', psth_fn)
         corr_file = os.path.join(plot_dir, 'Palatability', psth_fn.replace('psth', 'corr'))
-        plt.plot_PSTHs(rec, unit, params, psth_file)
+        nplt.plot_PSTHs(rec, unit, params, save_file=psth_file)
         plt.plot_palatability_correlation(rec_name, unit_name, time, s_rs, s_ps,
                                           p_rs, p_ps, corr_file)
 
@@ -1461,10 +1475,6 @@ class HmmAnalysis(object):
 
         dist_file = os.path.join(plot_dir, 'late_start_distributions.svg')
         nplt.plot_timing_distributions(df, state='late', value_col='t_start', save_file=dist_file)
-        dist_file = os.path.join(plot_dir, 'Saccharin_early_end_distributions.svg')
-        nplt.plot_timing_distributions(df.query('taste == "Saccharin"'),
-                                       state='early', value_col='t_end',
-                                       save_file=dist_file)
 
         dist_file = os.path.join(plot_dir, 'Saccharin_late_start_distributions.svg')
         nplt.plot_timing_distributions(df.query('taste == "Saccharin"'),
@@ -1472,6 +1482,11 @@ class HmmAnalysis(object):
                                        save_file=dist_file)
 
         for taste, grp in df.groupby('taste'):
+            # plot distributions
+            fn1 = os.path.join(plot_dir, f'{taste}_early_end_distributions.svg')
+            nplt.plot_timing_distributions(grp, state='early',
+                                           value_col='t_end', save_file=fn1)
+
             exc_df = grp[grp['exclude'] == False]
             # exp_group
             comp_file = os.path.join(plot_dir, f'{taste}_timing_comparison.svg')
@@ -1509,8 +1524,10 @@ class HmmAnalysis(object):
         # Make confusion plots using exp_group
         corr_file = os.path.join(plot_dir, 'confusion_correlations.svg')
         comp_file = os.path.join(plot_dir, 'confusion_comparison.svg')
+        diff_file = os.path.join(plot_dir, 'confusion_differences.svg')
         nplt.plot_confusion_correlations(confusion, save_file=corr_file)
         nplt.plot_confusion_data(confusion, save_file=comp_file, group_col='exp_group')
+        nplt.plot_confusion_differences(confusion, save_file=diff_file)
 
         # Make confusion plots using exp_group and excluding GFP-NoCTA
         corr_file = os.path.join(plot_dir, 'confusion_correlations-exclude.svg')
@@ -1575,7 +1592,7 @@ class HmmAnalysis(object):
         prob_fn = os.path.join(save_dir, 'HMM_Median_Gamma_Probs.png')
         mean_prob_fn = os.path.join(save_dir, 'HMM_Mean_Gamma_Probs.png')
         seq_fn = os.path.join(save_dir, 'All_Sequences.png')
-        sacc_seq_fn = os.path.join(save_dir, 'Saccharin_Sequences.png')
+        sacc_seq_fn = os.path.join(save_dir, 'Saccharin_Sequences.svg')
         seq_cta_fn = os.path.join(save_dir, 'All_Sequences-CTA.png')
         sacc_seq_cta_fn = os.path.join(save_dir, 'Saccharin_Sequences-CTA.png')
         plt.plot_hmm_coding_accuracy(coding, coding_fn)
@@ -1584,10 +1601,10 @@ class HmmAnalysis(object):
         plt.plot_mean_gamma_probs(best_hmms.query('taste == "Saccharin"'), mean_prob_fn)
 
         df = best_hmms.query('taste == "Saccharin" and exclude == False')
-        plt.plot_median_gamma_probs(df, prob_fn.replace('.png', '-exclude.png'))
+        plt.plot_median_gamma_probs(df, prob_fn.replace('.png', '-exclude.svg'))
 
         plt.plot_hmm_sequence_heatmap(best_hmms, 'exp_group', seq_fn)
-        plt.plot_hmm_sequence_heatmap(best_hmms.query('taste=="Saccharin"'), 'exp_group', sacc_seq_fn)
+        plt.plot_hmm_sequence_heatmap(best_hmms.query('taste=="Saccharin" and exclude == False'), 'exp_group', sacc_seq_fn)
         plt.plot_hmm_sequence_heatmap(best_hmms, 'cta_group', seq_cta_fn)
         plt.plot_hmm_sequence_heatmap(best_hmms.query('taste=="Saccharin"'), 'cta_group', sacc_seq_cta_fn)
         unit_fn = os.path.join(save_dir, 'Unit_Info.txt')
@@ -1682,7 +1699,7 @@ class HmmAnalysis(object):
         nplt.plot_hmm_trial_breakdown(trial_df, self.project, save_file=fn)
 
     @pm.push_alert(success_msg='HMM processing complete!')
-    def process_sorted_hmms(self, sorting='params #3', save_dir=None,
+    def process_sorted_hmms(self, sorting='params #5', save_dir=None,
                             overwrite=False, hmm_plots=False):
         if save_dir is None:
             save_dir = self.save_dir
@@ -2611,6 +2628,7 @@ def consolidate_results():
              os.path.join(d1, 'unit_pal_discrim.feather'),
              os.path.join(d1, 'palatability_data.npz'),
              os.path.join(d8, 'pc_data.feather'),
+             os.path.join(d8, 'pc_dQ_v_dN_data.feather'),
              # Taste responsive
              os.path.join(d1, 'unit_firing_rates.svg'),
              os.path.join(d1, 'unit_firing_rates.txt'),
@@ -2621,6 +2639,9 @@ def consolidate_results():
              os.path.join(d1, 'Mean_Spearman.svg'),
              os.path.join(d1, 'Mean_Spearman-comparison.svg'),
              os.path.join(d1, 'Mean_Spearman-comparison.txt'),
+             os.path.join(d1, 'Mean_Spearman-simple_comparison.svg'),
+             os.path.join(d1, 'Mean_Spearman-simple_comparison.txt'),
+             os.path.join(d1, 'Mean_Spearman-differences.svg'),
              os.path.join(d1, 'palatability_spearman_corr.svg'),
              os.path.join(d1, 'palatability_spearman_corr.txt'),
              # Taste discriminative
@@ -2631,6 +2652,8 @@ def consolidate_results():
              # MDS analysis
              os.path.join(d2, 'Saccharin_MDS_distances.svg'),
              os.path.join(d2, 'Saccharin_MDS_distances.txt'),
+             os.path.join(d2, 'Saccharin_MDS_distances-alternate.svg'),
+             os.path.join(d2, 'Saccharin_MDS_distances-alternate.txt'),
              os.path.join(d2, 'FullDim_MDS_distances.svg'),
              os.path.join(d2, 'FullDim_MDS_distances.txt'),
              # HMM identity and palatability coding
@@ -2641,16 +2664,27 @@ def consolidate_results():
              os.path.join(d4, 'confusion_correlations-exclude.svg'),
              os.path.join(d4, 'confusion_comparison-exclude.svg'),
              os.path.join(d4, 'confusion_comparison-exclude.txt'),
+             os.path.join(d4, 'confusion_differences.svg'),
              # HMM transition timing
              os.path.join(d5, 'timing_correlations-exclude.svg'),
              os.path.join(d5, 'early_end_distributions.svg'),
+             os.path.join(d5, 'early_end_distributions.txt'),
              os.path.join(d5, 'late_start_distributions.svg'),
+             os.path.join(d5, 'late_start_distributions.txt'),
              os.path.join(d5, 'Saccharin_early_end_distributions.svg'),
+             os.path.join(d5, 'Saccharin_early_end_distributions.txt'),
+             os.path.join(d5, 'Citric Acid_early_end_distributions.svg'),
+             os.path.join(d5, 'Citric Acid_early_end_distributions.txt'),
+             os.path.join(d5, 'Quinine_early_end_distributions.svg'),
+             os.path.join(d5, 'Quinine_early_end_distributions.txt'),
+             os.path.join(d5, 'NaCl_early_end_distributions.svg'),
+             os.path.join(d5, 'NaCl_early_end_distributions.txt'),
              os.path.join(d5, 'Saccharin_late_start_distributions.svg'),
+             os.path.join(d5, 'Saccharin_late_start_distributions.txt'),
              os.path.join(d5, 'Saccharin_timing_comparison-exclude.svg'),
              os.path.join(d5, 'Saccharin_timing_comparison-exclude.txt'),
              os.path.join(HA.save_dir, 'HMM_Median_Gamma_Probs.png'),
-             os.path.join(HA.save_dir, 'HMM_Median_Gamma_Probs-exclude.png'),
+             os.path.join(HA.save_dir, 'HMM_Median_Gamma_Probs-exclude.svg'),
              os.path.join(HA.save_dir, 'HMM_parameters.txt'),
              os.path.join(HA.save_dir, 'hmm_trial_breakdown.svg'),
              os.path.join(HA.save_dir, 'hmm_trial_breakdown.txt'),
@@ -2659,7 +2693,7 @@ def consolidate_results():
              *PA.files.values(),
              HA.files['hmm_timings'].replace('.feather', '.txt'),
              os.path.join(HA.save_dir, 'bic_comparison.svg'),
-             os.path.join(HA.save_dir, 'Saccharin_Sequences.png'),
+             os.path.join(HA.save_dir, 'Saccharin_Sequences.svg'),
              # Held Unit Response changes
              os.path.join(d6, 'Saccharin_responses_changed-exclude.txt'),
              os.path.join(d6, 'Saccharin_responses_changed-Cre_v_BadGFP.txt'),

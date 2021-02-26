@@ -4,11 +4,67 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import pylab as plt
-from scipy.stats import sem
+from scipy.stats import sem, norm, chi2_contingency, rankdata, spearmanr
 import itertools as it
 from plotting import ORDERS, add_suplabels, change_hue
 import analysis_stats as stats
 from scipy.ndimage.filters import gaussian_filter1d
+from blechpy import load_dataset
+
+
+def plot_confusion_differences(df, save_file=None):
+    pal_df = stats.get_diff_df(df, ['exp_group', 'state_group', 'cta_group'],
+                               'time_group', 'pal_confusion')
+    id_df = stats.get_diff_df(df, ['exp_group', 'state_group', 'cta_group'],
+                              'time_group', 'ID_confusion')
+    pal_df['grouping'] = pal_df.apply(lambda x: '%s\n%s' % (x['exp_group'], x['cta_group']), axis=1)
+    id_df['grouping'] = id_df.apply(lambda x: '%s\n%s' % (x['exp_group'], x['cta_group']), axis=1)
+    o1 = ORDERS['exp_group']
+    o2 = ORDERS['cta_group']
+    o3 = ORDERS['state_group']
+    x_order = ['GFP\nCTA', 'Cre\nNo CTA', 'GFP\nNo CTA']
+    cond_order = list(it.product(x_order, o3))
+    
+    fig, axes = plt.subplots(ncols=2, figsize=(15, 7), sharey=False)
+    sns.barplot(data=id_df, ax=axes[0], x='grouping', y='mean_diff',
+                hue='state_group', order=x_order, hue_order=o3)
+    sns.barplot(data=pal_df, ax=axes[1], x='grouping', y='mean_diff',
+                hue='state_group', order=x_order, hue_order=o3)
+    xdata = [x.get_x() + x.get_width()/2 for x in axes[0].patches]
+    xdata.sort()
+    tmp_pal = pal_df.set_index(['grouping', 'state_group'])[['mean_diff', 'sem_diff']].to_dict()
+    tmp_id = id_df.set_index(['grouping', 'state_group'])[['mean_diff', 'sem_diff']].to_dict()
+    for x, grp in zip(xdata, cond_order):
+        ym = tmp_id['mean_diff'][grp]
+        yd = tmp_id['sem_diff'][grp]
+        axes[0].plot([x, x], [ym-yd, ym+yd], color='k', linewidth=3)
+        ym = tmp_pal['mean_diff'][grp]
+        yd = tmp_pal['sem_diff'][grp]
+        axes[1].plot([x, x], [ym-yd, ym+yd], color='k', linewidth=3)
+
+    for ax in axes:
+        ymax = np.max(np.abs(ax.get_ylim()))
+        ax.set_ylim([-ymax, ymax])
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        #ax.axhline(0, linestyle='--', linewidth=1, alpha=0.6, color='k')
+        ax.grid(True, axis='y', linestyle=':')
+        if ax.is_first_col():
+            ax.set_ylabel(r'$\Delta$ % classified as NaCl')
+            ax.get_legend().remove()
+        else:
+            ax.get_legend().set_title('HMM State')
+
+    axes[0].set_title('ID Confusion')
+    axes[1].set_title('Pal Confusion')
+    fig.subplots_adjust(top=0.85)
+    fig.suptitle('Change in saccharin classification over learning')
+    if save_file:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return
+    else:
+        return fig, axes
 
 
 def plot_confusion_correlations(df, save_file=None):
@@ -173,22 +229,30 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
     outer_ax = add_suplabels(fig, 'Bootstrapped Confusion Analysis', '', '% '
                              'Sacc trials classified as NaCl')
     nrows = len(states)
-    ncols = 2
+    ncols = 3
     axes = np.array([[fig.add_subplot(nrows, ncols, j + ncols*i + 1)
-                      for j in range(ncols)] for i in range(nrows)]) 
+                      for j in range(ncols)] for i in range(nrows)])
     axes[0,0].get_shared_y_axes().join(axes[0,0], axes[1,0])
     axes[0,1].get_shared_y_axes().join(axes[0,1], axes[1,1])
+    axes[0,2].get_shared_y_axes().join(axes[0,2], axes[1,2])
     statistics = {}
-    for sg, (id_ax, pal_ax) in zip(state_order, axes):
+    for sg, (id_ax, pal_ax, psc_ax) in zip(state_order, axes):
         grp = df.query('state_group == @sg')
-        id_kw_stat, id_kw_p, id_gh_df = stats.kw_and_gh(grp, 'grouping', 'ID_confusion')
-        pal_kw_stat, pal_kw_p, pal_gh_df = stats.kw_and_gh(grp, 'grouping', 'pal_confusion')
+        id_kw_stat, id_kw_p, id_gh_df = stats.kw_and_gh(grp, 'grouping',
+                                                        'ID_confusion')
+        pal_kw_stat, pal_kw_p, pal_gh_df = stats.kw_and_gh(grp, 'grouping',
+                                                           'pal_confusion')
+        psc_kw_stat, psc_kw_p, psc_gh_df = stats.kw_and_gh(grp, 'grouping',
+                                                           'pal_confusion_score')
         id_sum = grp.groupby(['exp_group', 'time_group'])['ID_confusion'].describe()
         pal_sum = grp.groupby(['exp_group', 'time_group'])['pal_confusion'].describe()
+        psc_sum = grp.groupby(['exp_group', 'time_group'])['pal_confusion_score'].describe()
         statistics[sg] = {'id': {'kw_stat': id_kw_stat, 'kw_p': id_kw_p,
                                  'posthoc': id_gh_df, 'summary': id_sum},
                           'pal': {'kw_stat': pal_kw_stat, 'kw_p': pal_kw_p,
-                                  'posthoc': pal_gh_df, 'summary': pal_sum}}
+                                  'posthoc': pal_gh_df, 'summary': pal_sum},
+                          'pal_score': {'kw_stat': psc_kw_stat, 'kw_p': psc_kw_p,
+                                        'posthoc': psc_gh_df, 'summary': psc_sum}}
 
         g1 = plot_box_and_paired_points(grp, group_col, 'ID_confusion',
                                         'time_group', order=group_order,
@@ -204,6 +268,13 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
                                         ax=pal_ax, kind=kind,
                                         plot_points=plot_points)
 
+        g3 = plot_box_and_paired_points(grp, group_col, 'pal_confusion_score',
+                                        'time_group', order=group_order,
+                                        hue_order=hue_order,
+                                        subjects='exp_name',
+                                        ax=psc_ax, kind=kind,
+                                        plot_points=plot_points)
+
         #g1.axhline(50, linestyle='--', alpha=0.5, color='k')
         #g2.axhline(33.3, linestyle='--', alpha=0.5, color='k')
 
@@ -212,20 +283,24 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
         g1.set_xlabel('')
         g2.set_xlabel('')
         g2.set_ylabel('')
+        g2.legend_.remove()
+        g3.set_xlabel('')
+        g3.set_ylabel('')
         if id_ax.is_first_row():
             g1.set_title('ID Confusion')
             g2.set_title('Pal Confusion')
-
+            g3.set_title('Pal Confusion Score')
 
         if not pal_ax.is_last_row():
-            g2.legend_.remove()
+            g3.legend_.remove()
         else:
-            g2.legend(bbox_to_anchor=[1.2,1.2,0,0])
+            g3.legend(bbox_to_anchor=[1.2,1.2,0,0])
 
         #n_cells = grp.groupby('grouping').size().to_dict()
         n_cells = None
         g1_y = plot_sig_stars(g1, id_gh_df, cond_order, n_cells=n_cells)
         g2_y = plot_sig_stars(g2, pal_gh_df, cond_order, n_cells=n_cells)
+        g3_y = plot_sig_stars(g3, psc_gh_df, cond_order, n_cells=n_cells)
 
     if save_file:
         fn, ext = os.path.splitext(save_file)
@@ -241,6 +316,7 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
     assert len(df.taste.unique()) == 1, 'Please run one taste at a time'
     df = df.copy().dropna(subset=[group_col, 'state_group', 'time_group',
                                   't_start', 't_end'])
+    df = df.query('valid == True')
 
     # Make extra column for composite grouping
     df['grouping'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
@@ -299,30 +375,114 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
     else:
         return fig, axes, statistics
 
+
 def plot_timing_distributions(df, state='early', value_col='t_end', save_file=None):
-    df = df.copy()
     df = df[df['valid']]
+    df = df.query('state_group == @state').copy()
     df['grouping'] = df.apply(lambda x: '%s_%s' % (x['exp_group'], x['cta_group']), axis=1)
+    df['comp_group'] = df.apply(lambda x: '%s\n%s' % (x['grouping'], x['time_group']), axis=1)
+
     groups = df.grouping.unique()
     time_groups = df.time_group.unique()
+    groups = ['GFP_CTA', 'Cre_No CTA', 'GFP_No CTA']
     time_groups = ORDERS['time_group']
+    colors = sns.color_palette()[:len(time_groups)]
 
-    g = sns.displot(data=df.query('state_group == @state'), x=value_col,
-                    hue='time_group', row='grouping', hue_order = time_groups,
-                    kde=True)
-    g.set_titles('{row_name}')
-    g.fig.set_size_inches([7.9, 8.2])
+    bins = np.linspace(0,2000, 12)
+    bin_centers = bins[:-1] + np.diff(bins)/2
+    labels = []
+    dists = []
+
+    fig, axes = plt.subplots(nrows=len(groups), figsize=(8,10))
+    for n1, group in df.groupby('grouping'):
+        idx = groups.index(n1)
+        ax = axes[idx]
+        for i, n2 in enumerate(time_groups):
+            grp = group.query('time_group == @n2')
+            data = grp[value_col]
+            mu,sig = norm.fit(data)
+            x = np.linspace(0, 2000, 100)
+            y = norm.pdf(x, mu, sig)
+            counts, _ = np.histogram(data, bins=bins)
+            density, _ = np.histogram(data, bins=bins, density=True)
+            y_fit = norm.pdf(bin_centers, mu, sig)
+            labels.append('%s_%s' % (n1,n2))
+            dists.append(counts)
+            if ax.is_last_row():
+                l1 = n2
+            else:
+                l1 = None
+
+            ax.hist(data, density=True, fc=(*colors[i], 0.4), label=l1, bins=bins, edgecolor='k')
+            ss_res = np.sum((density - y_fit) **2)
+            ss_tot = np.sum((density - np.mean(density)) **2)
+            r2 = 1 - (ss_res/ss_tot)
+            fit_str = r'$\mu$=%3.3g, $\sigma$=%3.3g, $r^{2}$=%0.3g' % (mu,sig,r2)
+            ax.plot(x,y, color=colors[i], label=fit_str)
+
+        ax.set_ylabel(n1)
+        ax.legend()
+        sns.despine(ax=ax)
+        if not ax.is_last_row():
+            ax.set_xticklabels([])
+        else:
+            ax.set_xlabel('Transition Time (ms)')
+
+    #g = sns.displot(data=df.query('state_group == @state'), x=value_col,
+    #                hue='time_group', row='grouping', hue_order = time_groups,
+    #                kde=False, row_order=groups)
+    #for l, ax in zip(groups, g.axes):
+    #    ax.set_title('')
+    #    ax.set_ylabel(l)
+    #    if ax.is_last_row():
+    #        ax.set_xlabel('Transition Time (ms)')
+
+    ##g.set_titles('{row_name}')
+    #g.fig.set_size_inches([7.9, 8.2])
     plt.tight_layout()
-    g.fig.subplots_adjust(top=0.85)
+    fig.subplots_adjust(top=0.85)
     title = '%s state %s times' % (state, value_col.split('_')[-1])
-    g.fig.suptitle(title)
+    fig.suptitle(title)
+
+    # Get distributions and do stats and fits
+    dists = np.vstack(dists)
+    def drop_zero_cols(x):
+        return x[:, np.any(x != 0, axis=0)]
+
+    s, p, dof, exp = chi2_contingency(drop_zero_cols(dists))
+    out_stats = {'omnibus': {'A': 'all', 'B': 'all', 'chi2 stat': s, 'pval': p, 'dof': dof}}
+    pairs = [['%s_%s' % (x,y) for y in time_groups] for x in groups]
+    for i, (A,B) in enumerate(pairs):
+        i1 = labels.index(A)
+        i2 = labels.index(B)
+        x = drop_zero_cols(dists[[i1,i2]])
+        s, p, dof, exp = chi2_contingency(x)
+        out_stats = {f'{i}': {'A': A, 'B': B, 'chi2 stat': s, 'pval': p, 'dof': dof}}
+        if p <= 0.001:
+            ss = '***'
+        elif p <=0.01:
+            ss = '**'
+        elif p <= 0.05:
+            ss = '*'
+        else:
+            ss = ''
+
+        grp = [x for x in groups if x in A][0]
+        idx = groups.index(grp)
+        axes[idx].set_title(ss)
+
+    tmp = ['%s:  %s' % (x,y) for x,y in zip(labels, dists)]
+    tmp = '\n' + '\n'.join(tmp) + '\n'
+    out_stats['counts'] = tmp
 
     if save_file:
-        g.fig.savefig(save_file)
-        plt.close(g.fig)
+        fig.savefig(save_file)
+        plt.close(fig)
+        fn, ext = os.path.splitext(save_file)
+        agg.write_dict_to_txt(out_stats, save_file=fn+'.txt')
         return None
     else:
-        return g
+        return fig, axes
 
 
 def fix_coding_df(df):
@@ -431,6 +591,7 @@ def plot_coding_data(df, save_file=None, group_col='exp_group',
     else:
         return fig, axes, statistics
 
+
 def plot_box_and_paired_points(df, x, y, hue, order=None, hue_order=None,
                                subjects=None, estimator=np.mean,
                                error_func=sem, kind='box', plot_points=True, **kwargs):
@@ -499,7 +660,7 @@ def plot_sig_stars(ax, posthoc_df, cond_order, n_cells=None):
 
     xpts = []
     ypts = []
-    if len(ax.patches) == 0:
+    if len(ax.patches) < len(cond_order):
         labels = ax.get_xticklabels()
         #xpts = {x.get_text(): x.get_position()[0] for x in labels}
         xpts = {x: i for i,x in enumerate(cond_order)}
@@ -884,8 +1045,17 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     df = df.copy()
     df['grouping'] = df.apply(lambda x: '%s_%s' % (x['exp_group'], x['cta_group']), axis=1)
     df['abs_r'] = df['spearman_r'].abs()
+    df['r2'] = df['spearman_r']**2
     df['resp_time'] = df['time_bin'].apply(lambda x: 'Early (0-750ms)' if x < 750
                                            else 'Late (750-2000ms)')
+
+    diff_df = stats.get_diff_df(df, ['exp_group', 'time_group', 'cta_group'],
+                                'resp_time', 'r2')
+    diff_df['grouping'] = diff_df.apply(lambda x: '%s\n%s' % (x['exp_group'],
+                                                              x['cta_group']),
+                                        axis=1)
+    diff_df['mean_diff'] = -diff_df['mean_diff']
+
     col_order = list(df.grouping.unique())
     style_order = ORDERS['time_group']
     colors = sns.color_palette()[:len(col_order)]
@@ -896,7 +1066,7 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     hues = [1, 0.4, 1.4]
     fig = plt.figure(figsize=(15,8))
     _ = add_suplabels(fig, 'Single Unit Mean Correlation to Palatability',
-                      'Time (ms)', "|Spearman's R|")
+                      'Time (ms)', "Spearman's R^2")
     axes = []
     for i, grouping in enumerate(col_order):
         grp = df.query('grouping == @grouping')
@@ -904,7 +1074,7 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
         axes.append(ax)
 
         for j, tg in enumerate(style_order):
-            tmp = grp.query('time_group == @tg').groupby('time_bin')['abs_r'].agg([np.mean, sem])
+            tmp = grp.query('time_group == @tg').groupby('time_bin')['r2'].agg([np.mean, sem])
             x = np.array(tmp.index)
             x = x-x[0]
             y = tmp['mean'].to_numpy()
@@ -921,6 +1091,9 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
 
     plt.tight_layout()
 
+    df['simple_groups'] = df.apply(lambda x: '%s_%s' % (x['exp_group'],
+                                                            x['cta_group']),
+                                                            axis=1)
     df['grouping'] = df.apply(lambda x: '%s_%s\n%s' % (x['exp_group'],
                                                        x['cta_group'],
                                                        x['time_group']), axis=1)
@@ -929,14 +1102,16 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     o2 = ORDERS['cta_group']
     o3 = ORDERS['time_group']
     o4 = ['Early (0-750ms)', 'Late (750-2000ms)']
+    s_order = [f'{x}_{y}' for x,y in it.product(o1,o2)]
+    s_order = [x for x in s_order if x in df.simple_groups.unique()]
     g_order = [f'{x}_{y}\n{z}' for x,y,z in it.product(o1,o2,o3)]
-    cond_order = [f'{x}_{y}' for x,y in it.product(g_order, o4)]
     g_order = [x for x in g_order if x in df.grouping.unique()]
+    cond_order = [f'{x}_{y}' for x,y in it.product(g_order, o4)]
     cond_order = [x for x in cond_order if x in df.comp_grouping.unique()]
     fig2, ax = plt.subplots(figsize=(14,8))
-    g = sns.barplot(data=df, x='grouping', y='abs_r', hue='resp_time',
+    g = sns.barplot(data=df, x='grouping', y='r2', hue='resp_time',
                     order=g_order, hue_order=o4, ax=ax)
-    kw_s, kw_p, gh_df = stats.kw_and_gh(df, 'comp_grouping', 'abs_r')
+    kw_s, kw_p, gh_df = stats.kw_and_gh(df, 'comp_grouping', 'r2')
     statistics = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell posthoc': gh_df}
     # Slim down gh_df to only comparisons I care about
     valid_gh = []
@@ -953,7 +1128,7 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     valid_gh = pd.DataFrame(valid_gh)
     plot_sig_stars(ax, valid_gh, cond_order)
     ax.set_xlabel('')
-    ax.set_ylabel("|Spearman's R|")
+    ax.set_ylabel("Spearman's R^2")
     ax.set_title('Mean Palatability Correlation\n'
                  'only showing small subset of significant differences')
     tmp = df.groupby(['exp_name', 'exp_group', 'time_group'])['unit_num']
@@ -961,6 +1136,39 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     tmp = tmp.groupby(['exp_group', 'time_group']).sum().reset_index()
     tmp = tmp.rename(columns={'unit_num': 'n_cells'})
     statistics['n_cells'] = tmp
+
+    # Plot with simplified grouping
+    fig4, ax = plt.subplots(figsize=(10,8))
+    s_order = ['GFP_CTA', 'Cre_No CTA']
+    g2_order = [f'{x}\n{y}' for x,y in it.product(s_order, o3)]
+    g = sns.barplot(data=df, x='simple_groups', y='r2', hue='time_group',
+                    order=s_order, hue_order=o3, ax=ax)
+    ax.set_ylim([0,0.11])
+    kw_s, kw_p, gh_df = stats.kw_and_gh(df.query('exclude==False'), 'grouping', 'r2')
+    other_stats = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell psthoc': gh_df}
+    #Everything is significant, just add in illustrator
+    #plot_sig_stars(ax, gh_df, g2_order)
+
+    # Plot differences
+    o1 = ['GFP\nCTA', 'Cre\nNo CTA', 'GFP\nNo CTA']
+    o2 = ['preCTA', 'postCTA']
+    cond_order = list(it.product(o1, o2))
+    fig3, ax = plt.subplots(figsize=(10, 7))
+    sns.barplot(data=diff_df, ax=ax, x='grouping', y='mean_diff',
+                hue='time_group', order=o1, hue_order=o2)
+    xdata = [x.get_x() + x.get_width()/2 for x in ax.patches]
+    xdata.sort()
+    tmp = diff_df.set_index(['grouping', 'time_group'])[['mean_diff', 'sem_diff']].to_dict()
+    for x, grp in zip(xdata, cond_order):
+        ym = tmp['mean_diff'][grp]
+        yd = tmp['sem_diff'][grp]
+        ax.plot([x, x], [ym-yd, ym+yd], color='k', linewidth=3)
+
+    ax.set_xlabel('')
+    ax.grid(True, axis='y', linestyle=':')
+    ax.set_ylabel(r"$\Delta$ Spearman's R^2")
+    ax.get_legend().set_title('Epoch')
+    ax.set_title('Change in correlation to palatability\nbetween early and late halves of response')
 
     if save_file:
         fig.savefig(save_file)
@@ -970,35 +1178,46 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
         fig2.savefig(fn + '.svg')
         agg.write_dict_to_txt(statistics, fn + '.txt')
         plt.close(fig2)
+
+        fn2 = fn.replace('comparison', 'simple_comparison')
+        fig4.savefig(fn2 + '.svg')
+        agg.write_dict_to_txt(other_stats, fn2 + '.txt')
+        plt.close(fig4)
+
+        fn = fn.replace('comparison', 'differences.svg')
+        fig3.savefig(fn)
+        plt.close(fig3)
     else:
-        return fig, fig2, statistics
+        return fig, fig2, fig3, statistics
 
 
-def plot_MDS(df, group_col='exp_group', save_file=None):
+def plot_MDS(df, value_col='MDS_dQ_v_dN', group_col='exp_group',
+             ylabel='dQ/dN', save_file=None, kind='bar'):
     order = ORDERS[group_col]
     hue_order = ORDERS['time_group']
     col_order = ORDERS['MDS_time']
-    cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))] 
+    cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))]
     df['group_col'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
 
-    g = sns.catplot(data=df, y='MDS_dQ_v_dN', x=group_col,
-                    hue='time_group', col='time', kind='bar', order=order,
+    g = sns.catplot(data=df, y=value_col, x=group_col,
+                    hue='time_group', col='time', kind=kind, order=order,
                     hue_order=hue_order, col_order=col_order)
-    
+
     axes = g.axes[0]
     statistics = {}
     for ax, (tg, grp) in zip(axes, df.groupby('time')):
-        kw_s, kw_p, gh_df = stats.kw_and_gh(grp, 'group_col', 'MDS_dQ_v_dN')
+        kw_s, kw_p, gh_df = stats.kw_and_gh(grp, 'group_col', value_col)
         statistics[tg] = {'kw-stat': kw_s, 'kw-p': kw_p,
                           'Games-Howell posthoc': gh_df}
         n_cells = grp.groupby('group_col').size().to_dict()
         plot_sig_stars(ax, gh_df, cond_order, n_cells=n_cells)
         ax.set_title(tg)
         if ax.is_first_col():
-            ax.set_ylabel('dQ/dN')
+            ax.set_ylabel(ylabel)
 
         ax.set_xlabel('')
 
+    plt.tight_layout()
     g.fig.set_size_inches(12,10)
     g.fig.subplots_adjust(top=0.85)
     g.fig.suptitle('Relative MDS Distances of Saccharin Trials')
@@ -1009,6 +1228,7 @@ def plot_MDS(df, group_col='exp_group', save_file=None):
         agg.write_dict_to_txt(statistics, fn+'.txt')
     else:
         return g, statistics
+
 
 def plot_full_dim_MDS(df, save_file=None):
     df = df.copy()
@@ -1079,7 +1299,6 @@ def plot_full_dim_MDS(df, save_file=None):
         agg.write_dict_to_txt(statistics, fn+'.txt')
     else:
         return g, statistics
-
 
 
 def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
@@ -1178,4 +1397,181 @@ def plot_saccharin_consumption(proj, save_file=None):
         return g, out_stats
 
 
+def plot_held_unit_comparison(rec1, unit1, rec2, unit2, pvals, params,
+                              held_unit_name, exp_name, exp_group, taste,
+                              save_file=None):
+    dig1 = load_dataset(rec1).dig_in_mapping.copy().set_index('name')
+    dig2 = load_dataset(rec2).dig_in_mapping.copy().set_index('name')
+    ch1 = dig1.loc[taste, 'channel']
+    ch2 = dig2.loc[taste, 'channel']
 
+    bin_size = params['response_comparison']['win_size']
+    step_size = params['response_comparison']['step_size']
+    time_start = params['response_comparison']['time_win'][0]
+    time_end = params['response_comparison']['time_win'][1]
+    alpha = params['response_comparison']['alpha']
+    baseline_win = params['baseline_comparison']['win_size']
+    smoothing = params['psth']['smoothing_win']
+
+    t1, fr1, _ = agg.get_firing_rate_trace(rec1, unit1, ch1, bin_size=bin_size,
+                                           step_size=step_size,
+                                           t_start=time_start, t_end=time_end,
+                                           baseline_win=baseline_win,
+                                           remove_baseline=True)
+
+    t2, fr2, _ = agg.get_firing_rate_trace(rec2, unit2, ch2, bin_size=bin_size,
+                                           step_size=step_size,
+                                           t_start=time_start, t_end=time_end,
+                                           baseline_win=baseline_win,
+                                           remove_baseline=True)
+
+    pt1, psth1, _ = agg.get_psth(rec1, unit1, ch1, params, remove_baseline=True)
+
+    pt2, psth2, _ = agg.get_psth(rec2, unit2, ch2, params, remove_baseline=True)
+
+    fig, ax = plt.subplots(figsize=(10,8))
+
+    # --------------------------------------------------------------------------------
+    # Overlayed PSTH plot
+    # --------------------------------------------------------------------------------
+    mp1 = np.mean(psth1, axis=0)
+    sp1 = sem(psth1, axis=0)
+    mp2 = np.mean(psth2, axis=0)
+    sp2 = sem(psth2, axis=0)
+    mp1 = gaussian_filter1d(mp1, sigma=smoothing) # smooth PSTH
+    mp2 = gaussian_filter1d(mp2, sigma=smoothing) # smooth PSTH
+    line1 = ax.plot(pt1, mp1, linewidth=3, label='preCTA')
+    ax.fill_between(pt1, mp1 - sp1, mp1 + sp1, alpha=0.4)
+    line2 = ax.plot(pt2, mp2, linewidth=3, label='postCTA')
+    ax.fill_between(pt2, mp2 - sp2, mp2 + sp2, alpha=0.4)
+    ax.axvline(0, linewidth=2, linestyle='--', color='k')
+    top = np.max((mp1 + sp1, mp2 + sp2), axis=0)
+    sig_y = 1.25 * np.max(top)
+    p_y = 1.1 * np.max(top)
+    ylim = ax.get_ylim()
+    ax.set_ylim([ylim[0], 1.75*np.max(top)])
+    ax.set_xlim([pt1[0], pt1[-1]])
+    intervals = []
+    int_ps = []
+    for t, p in zip(t1, pvals):
+        if p > alpha:
+            continue
+
+        start = t - bin_size/2
+        end = t + bin_size/2
+        if len(intervals) > 0 and intervals[-1][1] == start:
+            intervals[-1][1] = end
+            int_ps[-1].append(p)
+        else:
+            intervals.append([start, end])
+            int_ps.append([p])
+
+        ax.plot([start, end], [sig_y, sig_y], linewidth=2, color='k')
+        p_str = '%0.3g' % p
+        # ax.text(t, p_y, p_str, horizontalalignment='center', fontsize=12)
+
+    for it, ip in zip(intervals, int_ps):
+        mid = np.mean(it)
+        max_p = np.max(ip)
+        if max_p <= 0.001:
+            ss = '***'
+        elif max_p <= 0.01:
+            ss = '**'
+        elif max_p <= 0.05:
+            ss = '*'
+        else:
+            continue
+
+        ax.text(mid, sig_y + 0.1, ss, horizontalalignment='center')
+
+    ax.set_ylabel('Firing rate (Hz)')
+    ax.set_title('Held Unit %s : %s : %s : %s\nFiring rate relative to '
+                      'baseline' % (held_unit_name, exp_name, exp_group, taste))
+    ax.legend()
+
+    if save_file:
+        fig.savefig(save_file)
+        plt.close(fig)
+    else:
+        return fig, ax
+
+
+def plot_PSTHs(rec, unit, params, save_file=None, ax=None):
+    dat = load_dataset(rec)
+    dim = dat.dig_in_mapping.set_index('name')
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(15,10))
+    else:
+        fig = ax.figure
+
+    bin_size = params['psth']['win_size']
+    step_size = params['psth']['step_size']
+    p_win = params['psth']['plot_window']
+    smoothing = params['psth']['smoothing_win']
+
+    rates = []
+    labels = []
+    time = None
+    for taste, row in dim.iterrows():
+        ch = row['channel']
+        t, fr, _ = agg.get_firing_rate_trace(rec, unit, ch, bin_size,
+                                             step_size=step_size,
+                                             t_start=p_win[0], t_end=p_win[1])
+        if time is None:
+            time = t
+
+        rank = agg.PAL_MAP[taste]
+        # Ignore Water
+        if rank > 0:
+            pal = np.ones((fr.shape[0],)) * agg.PAL_MAP[taste]
+            rates.append(fr)
+            labels.append(pal)
+
+        if taste != 'Water':
+            pt, psth, _ = agg.get_psth(rec, unit, ch, params, remove_baseline=False)
+            mp = np.mean(psth, axis=0)
+            mp = gaussian_filter1d(mp, smoothing)
+            sp = sem(psth, axis=0)
+            ax.plot(pt, mp, linewidth=3, label=taste)
+            ax.fill_between(pt, mp - sp, mp + sp, alpha=0.4)
+
+    # Compute and plot spearman corr R^2
+    if len(rates) > 0:
+        rates = np.vstack(rates)
+        labels = np.concatenate(labels)
+        n_bins = len(time)
+        s_rs = np.zeros((n_bins,))
+        s_ps = np.ones((n_bins,))
+        for i, t in enumerate(time):
+            if all(rates[:,i] == 0):
+                continue
+            else:
+                response_ranks = rankdata(rates[:, i])
+                s_rs[i], s_ps[i] = spearmanr(response_ranks, labels)
+
+        s_rs = s_rs**2
+        s_rs = gaussian_filter1d(s_rs, smoothing)
+        ax2 = ax.twinx()
+        ax2.plot(time, s_rs, color='k', linestyle=':', linewidth=3)
+        ax2.set_ylabel(r'Spearman $\rho^{2}')
+
+    ax.axvline(0, color='k', linewidth=1, linestyle='--')
+    ax.set_xlabel('Time (ms)')
+    ax.set_ylabel('Firing Rate (Hz)')
+    ax.set_xlim([pt[0], pt[-1]])
+    if isinstance(unit, int):
+        unit_name = 'unit%03d' % unit
+    else:
+        unit_name = unit_name
+
+    ax.set_title('%s %s' % (os.path.basename(rec), unit_name))
+    ax.legend()
+    if not os.path.isdir(os.path.dirname(save_file)):
+        os.mkdir(os.path.dirname(save_file))
+
+    if save_file is not None:
+        fig.savefig(save_file)
+        plt.close(fig)
+        return
+    else:
+        return fig, ax

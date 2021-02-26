@@ -1242,14 +1242,16 @@ def analyze_hmm_state_coding(best_hmms, all_units):
         # Pal Confusion
         if group.taste.isin(confusion_tastes).sum() == len(confusion_tastes):
             j = group.taste.isin(confusion_tastes)
-            epc = LDA_classifier_confusion(group[j], 'palatability', 'early_state', all_units,
-                                           train_labels=confusion_pal[:-1],
-                                           test_labels=[confusion_pal[-1]],
-                                           other_state_col='late_state')
-            lpc = LDA_classifier_confusion(group[j], 'palatability', 'late_state', all_units,
-                                           train_labels=confusion_pal[:-1],
-                                           test_labels=[confusion_pal[-1]],
-                                           other_state_col='early_state')
+            epc, eps = LDA_classifier_confusion(group[j], 'palatability',
+                                                'early_state', all_units,
+                                                train_labels=confusion_pal[:-1],
+                                                test_labels=[confusion_pal[-1]],
+                                                other_state_col='late_state')
+            lpc, lps = LDA_classifier_confusion(group[j], 'palatability',
+                                                'late_state', all_units,
+                                                train_labels=confusion_pal[:-1],
+                                                test_labels=[confusion_pal[-1]],
+                                                other_state_col='early_state')
             if epc is not None:
                 tmp['early_pal_confusion'] = epc
 
@@ -1406,16 +1408,16 @@ def LDA_classifier_confusion(group, label_col, state_col, all_units,
                                                      remove_baseline=True,
                                                      other_state_col=other_state_col)
     if labels is None:
-        return None
+        return None, None
 
     n_cells = rates.shape[1]
     if n_cells < 2:
-        return None
+        return None, None
 
     train_idx = np.where([x in train_labels for x in labels])[0]
     test_idx = np.where([x in test_labels for x in labels])[0]
     if len(train_idx) == 0 or len(test_idx) == 0:
-        return None
+        return None, None
 
     model = stats.LDAClassifier(labels[train_idx], rates[train_idx, :],
                                 row_id=identifiers[train_idx, :])
@@ -1427,7 +1429,7 @@ def LDA_classifier_confusion(group, label_col, state_col, all_units,
     #return counts[1]/np.sum(counts)
     counts = [len(np.where(predictions == x)[0]) for x in train_labels]
     #return counts
-    return 100 * counts[0] / np.sum(counts)  ## returns % nacl
+    return 100 * counts[0] / np.sum(counts), np.mean(predictions)  ## returns % nacl
 
 
 def choose_early_late_states(hmm, early_window=[200,700], late_window=[750, 1500]):
@@ -2041,6 +2043,7 @@ def saccharin_confusion_analysis(best_hmms, all_units, area='GC',
                     pal_acc, pred = run_classifier(train, train_l, test, tst_l,
                                                    classifier=stats.LDAClassifier)
                     row['pal_confusion'] = pal_acc
+                    row['pal_confusion_score'] = np.mean(pred)
                     counts = Counter(pred)
                     row['pal_counts_nacl'] = counts[pal_map['NaCl']]
                     row['pal_counts_ca'] = counts[pal_map['Citric Acid']]

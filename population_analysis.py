@@ -87,7 +87,7 @@ def apply_pca_analysis(df, params):
     dist_metric = [euclidean(x, q_mean)/euclidean(x, n_mean) for x in mds_values]
     assert len(dist_metric) == rates.shape[0], 'computed distances over wrong axis'
     out_df['dQ_v_dN_fullMDS'] = pd.DataFrame(dist_metric)
-    
+
     # Do it again with raw rates
     q_mean = np.mean(rates[q_idx, :], axis=0)
     n_mean = np.mean(rates[n_idx, :], axis=0)
@@ -190,18 +190,22 @@ def apply_mds_dist_metric(df):
     Yn = I(nacl_y, nacl_dy)
     Xq = I(Q_x, Q_dx)
     Yq = I(Q_y, Q_dy)
+    dQN = ((Xn - Xq)**2 + (Yn - Yq)**2)**0.5
     def get_metric(z):
         x = z[0]
         y = z[1]
         dN = ((Xn-x)**2 + (Yn - y)**2)**0.5
         dQ = ((Xq-x)**2 + (Yq-y)**2)**0.5
         dS = dQ/dN
+        dS2 = (dQ - dN)/dQN
         if np.isnan(dS.value):
             raise ValueError()
 
-        return pd.Series({'MDS_dQ_v_dN': dS.value, 'MDS_dQ_v_dN_sem': dS.delta})
+        return pd.Series({'MDS_dQ_v_dN': dS.value, 'MDS_dQ_v_dN_sem': dS.delta,
+                          'MDS_dQ_minus_dN': dS2.value, 'MDS_dQ_minus_dN_sem':dS2.delta})
 
-    sacc[['MDS_dQ_v_dN', 'MDS_dQ_v_dN_sem']] = sacc[['MDS1','MDS2']].apply(get_metric, axis=1)
+    sacc[['MDS_dQ_v_dN', 'MDS_dQ_v_dN_sem',
+          'MDS_dQ_minus_dN', 'MDS_dQ_minus_dN_sem']] = sacc[['MDS1','MDS2']].apply(get_metric, axis=1)
 
     return sacc
 

@@ -1297,7 +1297,7 @@ def plot_hmm(rec_dir, hmm_id, save_file=None, hmm=None, params=None, title_extra
         return None
 
 
-def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None):
+def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None, cmap='icefire'):
     hmms = best_hmms.dropna(subset=['hmm_id'])
     tastes = best_hmms.taste.unique()
     fig, axes = plt.subplots(ncols=len(tastes), figsize=(5+5*len(tastes), 10))
@@ -1365,13 +1365,15 @@ def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None):
         else:
             cbar = False
 
-        _, ax = grouped_heatmap(sequences, row_id, sort_stat, X=time, ax=ax, cbar=cbar)
+        _, ax = grouped_heatmap(sequences, row_id, sort_stat, X=time, ax=ax, cbar=cbar, cmap=cmap)
         #ax.set_xticks(np.linspace(time[0], time[-1], 10))
         if time[0] <= 0:
             ax.axvline(np.where(time==0)[0], color='b', linewidth=3, linestyle='--')
 
         ax.yaxis.set_tick_params(length=0, labelrotation=0)
         ax.set_title(tst)
+        ax.set_xticks([0, 250, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250])
+        ax.set_xticklabels([-250, 0, 250, 500, 750, 1000, 1250, 1500, 1750, 2000])
 
     fig.subplots_adjust(top=0.85)
     fig.suptitle('HMM State Sequences')
@@ -1966,6 +1968,10 @@ def plot_median_gamma_probs(best_hmms, save_file=None):
     ax[0].legend()
     ax[1].set_ylabel('Late\nState')
     ax[1].set_xlabel('Time (ms)')
+    ax[0].set_ylim([0,1])
+    ax[0].set_xlim([0,1500])
+    ax[1].set_ylim([0,1])
+    ax[1].set_xlim([0,1500])
 
     if save_file:
         fig.savefig(save_file)
@@ -2067,7 +2073,7 @@ def plot_mean_gamma_probs(best_hmms, save_file=None):
 
 
 def grouped_heatmap(data, group_var, sort_var, X=None, ax=None,
-                    smoothing_width=None, cbar=True, cmap='rocket'):
+                    smoothing_width=None, cbar=True, cmap='mako'):
     if ax is None:
         fig, ax = plt.subplots(figsize=(15,10))
     else:
