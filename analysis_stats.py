@@ -476,3 +476,17 @@ def gaussian_fit(x, y):
 
 def gaussian(x, mu, sig):
         return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))
+
+def anova(df, between=None, within=None, dv=None, subject=None):
+    if not isinstance(between ,list):
+        groups = [between]
+    else:
+        groups = between
+
+    if within:
+        groups = [*groups, within]
+
+    aov = df.anova(dv=dv, between=groups)
+    ptt = df.pairwise_ttests(dv=dv, between=between, within=within,
+                             subject=subject, padjust='bonf')
+    return aov, ptt

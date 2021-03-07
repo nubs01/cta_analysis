@@ -4,12 +4,15 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import pylab as plt
-from scipy.stats import sem, norm, chi2_contingency, rankdata, spearmanr
+from scipy.stats import sem, norm, chi2_contingency, rankdata, spearmanr, chisquare
 import itertools as it
 from plotting import ORDERS, add_suplabels, change_hue
 import analysis_stats as stats
 from scipy.ndimage.filters import gaussian_filter1d
 from blechpy import load_dataset
+from blechpy.analysis import poissonHMM as ph
+from blechpy.plotting import hmm_plot as hplt
+import hmm_analysis as hmma
 
 
 def plot_confusion_differences(df, save_file=None):
@@ -240,19 +243,25 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
         grp = df.query('state_group == @sg')
         id_kw_stat, id_kw_p, id_gh_df = stats.kw_and_gh(grp, 'grouping',
                                                         'ID_confusion')
+        id_aov, id_ptt = stats.anova(grp, dv='ID_confusion', between=['exp_group', 'time_group'])
         pal_kw_stat, pal_kw_p, pal_gh_df = stats.kw_and_gh(grp, 'grouping',
                                                            'pal_confusion')
+        pal_aov, pal_ptt = stats.anova(grp, dv='pal_confusion', between=['exp_group', 'time_group'])
         psc_kw_stat, psc_kw_p, psc_gh_df = stats.kw_and_gh(grp, 'grouping',
                                                            'pal_confusion_score')
+        psc_aov, psc_ptt = stats.anova(grp, dv='pal_confusion_score', between=['exp_group', 'time_group'])
         id_sum = grp.groupby(['exp_group', 'time_group'])['ID_confusion'].describe()
         pal_sum = grp.groupby(['exp_group', 'time_group'])['pal_confusion'].describe()
         psc_sum = grp.groupby(['exp_group', 'time_group'])['pal_confusion_score'].describe()
         statistics[sg] = {'id': {'kw_stat': id_kw_stat, 'kw_p': id_kw_p,
-                                 'posthoc': id_gh_df, 'summary': id_sum},
+                                 'posthoc': id_gh_df, 'summary': id_sum,
+                                 'anova': id_aov, 'ttests': id_ptt},
                           'pal': {'kw_stat': pal_kw_stat, 'kw_p': pal_kw_p,
-                                  'posthoc': pal_gh_df, 'summary': pal_sum},
+                                  'posthoc': pal_gh_df, 'summary': pal_sum,
+                                  'anova': pal_aov, 'ttests': pal_ptt},
                           'pal_score': {'kw_stat': psc_kw_stat, 'kw_p': psc_kw_p,
-                                        'posthoc': psc_gh_df, 'summary': psc_sum}}
+                                        'posthoc': psc_gh_df, 'summary': psc_sum,
+                                        'anova': psc_aov, 'ttests': psc_ptt}}
 
         g1 = plot_box_and_paired_points(grp, group_col, 'ID_confusion',
                                         'time_group', order=group_order,
@@ -450,14 +459,19 @@ def plot_timing_distributions(df, state='early', value_col='t_end', save_file=No
         return x[:, np.any(x != 0, axis=0)]
 
     s, p, dof, exp = chi2_contingency(drop_zero_cols(dists))
-    out_stats = {'omnibus': {'A': 'all', 'B': 'all', 'chi2 stat': s, 'pval': p, 'dof': dof}}
+    out_stats = {'omnibus': {'A': 'all', 'B': 'all', 'chi2 stat': s, 'pval': p}}
     pairs = [['%s_%s' % (x,y) for y in time_groups] for x in groups]
+    npairs = len(pairs)
     for i, (A,B) in enumerate(pairs):
         i1 = labels.index(A)
         i2 = labels.index(B)
         x = drop_zero_cols(dists[[i1,i2]])
-        s, p, dof, exp = chi2_contingency(x)
-        out_stats = {f'{i}': {'A': A, 'B': B, 'chi2 stat': s, 'pval': p, 'dof': dof}}
+        s, p = chisquare(x[0], f_exp=x[1])
+        if np.isinf(s):
+            s,p = chisquare(x[1], f_exp=x[0])
+        # Bonferroni Correction
+        p = p*npairs
+        out_stats[f'{i}'] = {'A': A, 'B': B, 'chi2 stat': s, 'pval': p}
         if p <= 0.001:
             ss = '***'
         elif p <=0.01:
@@ -1145,7 +1159,13 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
                     order=s_order, hue_order=o3, ax=ax)
     ax.set_ylim([0,0.11])
     kw_s, kw_p, gh_df = stats.kw_and_gh(df.query('exclude==False'), 'grouping', 'r2')
-    other_stats = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell psthoc': gh_df}
+    df['cells'] = df.apply(lambda x: '%s_%s_%s' % (x['exp_name'],
+                                                   x['time_group'],
+                                                   x['unit_num']), axis=1)
+    aov, ptt = stats.anova(df.query('exclude == False'), between=['exp_group', 'time_group'],
+                           within='time_bin', dv='r2', subject='cells')
+    other_stats = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell psthoc':
+                   gh_df, 'anova': aov, 't-tests': ptt}
     #Everything is significant, just add in illustrator
     #plot_sig_stars(ax, gh_df, g2_order)
 
@@ -1341,7 +1361,9 @@ def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
 
         n_cells = group.groupby('group_col').size().to_dict()
         kw_s, kw_p, gh_df = stats.kw_and_gh(group, 'group_col', 'firing_rate')
-        tmp = {'KW Stat': kw_s, 'KW p': kw_p, 'Games-Howell posthoc': gh_df}
+        aov, ptt = stats.anova(group, dv='firing_rate', between=['exp_group', 'time_group'])
+        tmp = {'KW Stat': kw_s, 'KW p': kw_p, 'Games-Howell posthoc': gh_df,
+               'anova': aov, 't-tests': ptt}
         if ft in statistics.keys():
             statistics[ft][ut] = tmp
         else:
@@ -1575,3 +1597,137 @@ def plot_PSTHs(rec, unit, params, save_file=None, ax=None):
         return
     else:
         return fig, ax
+
+
+def plot_example_hmms(example_csv, best_hmms, save_file=None):
+    df = pd.read_csv(example_csv, names=['exp_name', 'rec_group', 'hmm_id',
+                                         'taste', 'trials', 'exp_group',
+                                         'time_group'])
+    def parse_trials(x):
+        y = list(map(int, x[1:-1].split('.')))
+        return y
+
+    df['trials'] = df.trials.apply(parse_trials)
+    rec_map = best_hmms.set_index(['exp_name', 'rec_group'])['rec_dir'].drop_duplicates()
+
+    # Plot 1: Rows - GFP/Cre, Columns - taste, use ctaTrain for Sacc
+    fig = plt.figure(figsize=(10,8))
+    df1 = df.query('taste != "Saccharin" or rec_group == "ctaTrain"')
+    df1 = df1.sort_values(by=['exp_group', 'taste'], ascending=False).reset_index(drop=True)
+    tastes = list(df1.taste.unique())
+    groups = list(df1.exp_group.unique())
+    nrows = len(groups)
+    ncols = len(tastes)
+    assert nrows*ncols == df1.shape[0], 'Incorrect number of tastes/group'
+    outer_grid = fig.add_gridspec(nrows, ncols, wspace=0.3, hspace=0.2)
+    background_color = sns.color_palette('Set2')[-1]
+    paired_colors = sns.color_palette('Paired')[:-2]
+    paired_colors.reverse()
+    for i, row in df1.iterrows():
+        outer_ax = fig.add_subplot(outer_grid[i])
+        for sp in outer_ax.spines.values():
+            sp.set_visible(False)
+        outer_ax.set_xticks([])
+        outer_ax.set_yticks([])
+        if outer_ax.is_first_row():
+            outer_ax.set_title(row['taste'])
+        if outer_ax.is_first_col():
+            outer_ax.set_ylabel(row['exp_group'], labelpad=10)
+        if outer_ax.is_last_row():
+            outer_ax.set_xlabel('Time (ms)', labelpad=20)
+
+        inner_grid = outer_grid[i].subgridspec(len(row['trials']), 1)
+        axes = [fig.add_subplot(ig) for ig in inner_grid]
+        rd = rec_map[(row['exp_name'], row['rec_group'])]
+        j = tastes.index(row['taste'])
+        colors = [background_color, paired_colors[2*j], paired_colors[2*j+1]]
+        if row['taste'] == 'Saccharin':
+            sacc_colors = colors
+
+        plot_mini_hmm(rd, row['hmm_id'], row['taste'],
+                      row['trials'], axes, colors=colors)
+
+    # Plot 2: Row - GFP/Cre, Columms - pre/post, only sacchairn
+    df2 = df.query('taste == "Saccharin"')
+    df2 = df2.sort_values(by=['time_group', 'exp_group'], ascending=False).reset_index(drop=True)
+    fig2 = plt.figure(figsize=(8,8))
+    t_groups = list(df2.time_group.unique())
+    ncols = len(t_groups)
+    outer_grid = fig.add_gridspec(ncols, nrows, wspace=0.3, hspace=0.2)
+    for i, row in df2.iterrows():
+        outer_ax = fig2.add_subplot(outer_grid[i])
+        for sp in outer_ax.spines.values():
+            sp.set_visible(False)
+        outer_ax.set_xticks([])
+        outer_ax.set_yticks([])
+        if outer_ax.is_first_row():
+            outer_ax.set_title(row['exp_group'])
+        if outer_ax.is_first_col():
+            outer_ax.set_ylabel(row['time_group'], labelpad=10)
+        if outer_ax.is_last_row():
+            outer_ax.set_xlabel('Time (ms)', labelpad=20)
+
+        inner_grid = outer_grid[i].subgridspec(len(row['trials']), 1)
+        axes = [fig2.add_subplot(ig) for ig in inner_grid]
+        rd = rec_map[(row['exp_name'], row['rec_group'])]
+        plot_mini_hmm(rd, row['hmm_id'], row['taste'],
+                      row['trials'], axes, colors=sacc_colors)
+
+
+
+    if save_file:
+        fig.savefig(save_file)
+        plt.close(fig)
+        fig2.savefig(save_file.replace('.svg', '-2.svg'))
+        plt.close(fig2)
+    else:
+        return fig
+
+
+
+
+def plot_mini_hmm(rec_dir, hmm_id, taste, trials, axes, colors=None):
+    h5_file = hmma.get_hmm_h5(rec_dir)
+    hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
+    units = ph.query_units(rec_dir, 'single', area='GC')
+    dat = load_dataset(rec_dir)
+    dim = dat.dig_in_mapping.set_index('name')['channel'].to_dict()
+    channel = dim[taste]
+    seqs = hmm.stat_arrays['best_sequences']
+    gammas = hmm.stat_arrays['gamma_probabilities']
+    time = hmm.stat_arrays['time']
+    seqs = seqs[trials, :]
+    gammas = gammas[trials, :, :]
+    n_states = hmm.n_states
+    spike_array, dt, s_t = ph.get_hmm_spike_data(rec_dir, 'single', channel,
+                                                 time_start=time[0],
+                                                 time_end=time[-1], dt=0.001,
+                                                 area='GC', trials=trials)
+    if colors is None:
+        colors = sns.color_palette()[:n_states]
+
+    for ax, seq, gam, sa in zip(axes, seqs, gammas, spike_array):
+        axy = ax.twinx()
+        hplt.plot_raster(sa, time=time, ax=axy, y_min=1, y_max=sa.shape[0])
+        hplt.plot_sequence(seq, time=time, ax=ax, colors=colors)
+        hplt.plot_probability_traces(gam, time=time, ax=ax, colors=colors, thresh=1.1)
+        ax.set_xlim([time[0], time[-1]])
+        axy.set_ylim([0, sa.shape[0]+1])
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        for sp in axy.spines.values():
+            sp.set_visible(False)
+
+        if ax.is_first_row() and ax.is_first_col():
+            ax.set_yticks([0, 1])
+            axy.set_yticks([])
+        else:
+            ax.set_yticks([])
+            axy.set_yticks([])
+
+        if ax.is_last_row():
+            ax.set_xticks([0, 1000, 2000])
+        else:
+            ax.set_xticks([])
+
+

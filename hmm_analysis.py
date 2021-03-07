@@ -447,10 +447,10 @@ def get_early_and_late_firing_rates(rec_dir, hmm_id, early_state, late_state, un
         units = params['unit_type']
 
     spike_array, dt, s_time = ph.get_hmm_spike_data(rec_dir, units,
-                                                      channel,
-                                                      time_start=t_start,
-                                                      time_end=t_end, dt=dt,
-                                                      trials=n_trials)
+                                                    channel,
+                                                    time_start=t_start,
+                                                    time_end=t_end, dt=dt,
+                                                    trials=n_trials)
     # spike_array is trial x neuron x time
     n_trials, n_cells, n_steps = spike_array.shape
     early_rates = []
@@ -1854,7 +1854,7 @@ class CustomHandler(ph.HmmHandler):
                     hmm_ids.append(hid)
 
                 p['channel'] = dim.loc[t, 'channel']
-                unit_names = query_units(dat, p['unit_type'], area=p['area'])
+                unit_names = ph.query_units(dat, p['unit_type'], area=p['area'])
                 p['n_cells'] = len(unit_names)
                 if p['n_trials'] is None:
                     p['n_trials'] = len(trials.query('name == @t'))
