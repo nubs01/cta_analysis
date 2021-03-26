@@ -37,7 +37,7 @@ ELECTRODES_IN_GC = {'RN5': 'right', 'RN10': 'both', 'RN11': 'right',
                     'RN24': 'both', 'RN25': 'both'}
 
 
-ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 750, 'alpha': 0.05},
+ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 1000, 'alpha': 0.05},
                    'pal_responsive': {'win_size': 250, 'step_size': 25,
                                       'time_win': [-250, 2000], 'alpha': 0.05},
                    'baseline_comparison': {'win_size': 1500, 'alpha': 0.01},
@@ -573,11 +573,11 @@ class ProjectAnalysis(object):
         if not os.path.isdir(save_dir):
             os.mkdir(save_dir)
 
-        plt.plot_pca_distances(dist_data, os.path.join(save_dir, 'distances'))
-        plt.plot_pca_metric(metric_data, os.path.join(save_dir, 'relative_PCA_distances.svg'))
-        plt.plot_mds_metric(metric_data, os.path.join(mds_dir, 'relative_MDS_distances.svg'))
-        plt.plot_animal_pca(pc_data, os.path.join(save_dir, 'animal_pca'))
-        plt.plot_animal_mds(pc_data, os.path.join(mds_dir, 'animal_mds'))
+        #plt.plot_pca_distances(dist_data, os.path.join(save_dir, 'distances'))
+        #plt.plot_pca_metric(metric_data, os.path.join(save_dir, 'relative_PCA_distances.svg'))
+        #plt.plot_mds_metric(metric_data, os.path.join(mds_dir, 'relative_MDS_distances.svg'))
+        #plt.plot_animal_pca(pc_data, os.path.join(save_dir, 'animal_pca'))
+        #plt.plot_animal_mds(pc_data, os.path.join(mds_dir, 'animal_mds'))
 
         metric_data = agg.apply_grouping_cols(metric_data, self.project)
         metric_data = metric_data.query('exclude == False')
@@ -585,22 +585,22 @@ class ProjectAnalysis(object):
         nplt.plot_MDS(metric_data, save_file=fn)
         fn = os.path.join(mds_dir, 'Saccharin_MDS_distances-alternate.svg')
         nplt.plot_MDS(metric_data, save_file=fn, ylabel='dQ-dN',
-                      value_col='MDS_dQ_minus_dN', kind='bar')
+                      value_col='MDS_dQ_minus_dN', kind='point')
 
-        fn = os.path.join(mds_dir, 'FullDim_MDS_distances.svg')
-        nplt.plot_full_dim_MDS(pc_data, save_file=fn)
+        #fn = os.path.join(mds_dir, 'FullDim_MDS_distances.svg')
+        #nplt.plot_full_dim_MDS(pc_data, save_file=fn)
 
         # Change exp group to CTA learning and re-plot
-        learn_map = self.project._exp_info.set_index('exp_name')
-        def foo(x):
-            if learn_map.loc[x]['CTA_learned']:
-                return 'CTA'
-            else:
-                return 'No CTA'
+        #learn_map = self.project._exp_info.set_index('exp_name')
+        #def foo(x):
+        #    if learn_map.loc[x]['CTA_learned']:
+        #        return 'CTA'
+        #    else:
+        #        return 'No CTA'
 
-        metric_data['exp_group'] = metric_data['exp_name'].apply(foo)
-        plt.plot_pca_metric(metric_data, os.path.join(save_dir, 'relative_PCA_distances-CTA.svg'))
-        plt.plot_mds_metric(metric_data, os.path.join(mds_dir, 'relative_MDS_distances-CTA.svg'))
+        #metric_data['exp_group'] = metric_data['exp_name'].apply(foo)
+        #plt.plot_pca_metric(metric_data, os.path.join(save_dir, 'relative_PCA_distances-CTA.svg'))
+        #plt.plot_mds_metric(metric_data, os.path.join(mds_dir, 'relative_MDS_distances-CTA.svg'))
 
     def fix_palatability(self):
         agg.fix_palatability(self.project, pal_map=agg.PAL_MAP)
@@ -806,7 +806,7 @@ def apply_taste_responsive(row, params, data_file):
         f, p = ttest_ind(baseline, response)
 
     row['taste_responsive'] = (p <= alpha)
-    row['reponse_p'] = p
+    row['response_p'] = p
     row['response_f'] = f
 
     # Break it up by time and save array
@@ -959,6 +959,7 @@ class HmmAnalysis(object):
                       'best_hmms': os.path.join(save_dir, 'best_hmms.feather'),
                       'hmm_coding': os.path.join(save_dir, 'hmm_coding.feather'),
                       'hmm_confusion': os.path.join(save_dir, 'hmm_confusion.feather'),
+                      'hmm_mds': os.path.join(save_dir, 'hmm_mds.feather'),
                       'hmm_timings': os.path.join(save_dir, 'hmm_timings.feather')}
 
         self.base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
@@ -1404,13 +1405,16 @@ class HmmAnalysis(object):
         coding_file = self.files['hmm_coding']
         timing_file = self.files['hmm_timings']
         confusion_file = self.files['hmm_confusion']
+        mds_file = self.files['hmm_mds']
         if save_dir is not None:
             cfn = os.path.basename(coding_file)
             cnfn = os.path.basename(confusion_file)
             tfn = os.path.basename(timing_file)
+            mfn = os.path.basename(mds_file)
             coding_file = os.path.join(save_dir, cfn)
             timing_file = os.path.join(save_dir, tfn)
             confusion_file = os.path.join(save_dir, cnfn)
+            mds_file = os.path.join(save_dir, mfn)
         else:
             save_dir = self.save_dir
 
@@ -1438,25 +1442,30 @@ class HmmAnalysis(object):
                                                           repeats=50)
             feather.write_dataframe(confusion, confusion_file)
 
+        if os.path.isfile(mds_file) and not overwrite:
+            mds = feather.read_dataframe(mds_file)
+        else:
+            mds = hmma.hmm_mds_analysis(best_hmms, all_units, area='GC',
+                                        single_unit=True)
+            mds = agg.apply_grouping_cols(mds, self.project)
+            feather.write_dataframe(mds, mds_file)
 
         if not os.path.isfile(timing_stats) or overwrite:
             descrip = hmma.describe_hmm_state_timings(timings)
             with open(timing_stats, 'w') as f:
                 print(descrip, file=f)
 
-        return coding, timings, confusion
+        return coding, timings, confusion, mds
 
 
     def plot_hmm_timing(self, save_dir=None):
         if save_dir is None:
             save_dir = self.save_dir
 
-        _, timing, _ = self.analyze_hmms(save_dir=save_dir)
+        _, timing, _, _ = self.analyze_hmms(save_dir=save_dir)
         df = timing.copy()
-        df['exclude'] = df.apply(lambda x: True if
-                                 (x['exp_group'] == 'GFP' and
-                                  x['cta_group'] == 'No CTA')
-                                 else False, axis=1)
+        if 'exclude' not in df.columns:
+            df = agg.apply_grouping_cols(df, self.project)
 
         plot_dir = os.path.join(save_dir, 'timing_analysis')
         if os.path.isdir(plot_dir):
@@ -1508,7 +1517,7 @@ class HmmAnalysis(object):
         if save_dir is None:
             save_dir = self.save_dir
 
-        _, _, confusion = self.analyze_hmms(save_dir=save_dir)
+        _, _, confusion, _ = self.analyze_hmms(save_dir=save_dir)
         confusion['exclude'] = confusion.apply(lambda x: True if
                                                (x['exp_group'] == 'GFP' and
                                                 x['cta_group'] == 'No CTA')
@@ -1547,7 +1556,7 @@ class HmmAnalysis(object):
         if save_dir is None:
             save_dir = self.save_dir
 
-        coding, _, _ = self.analyze_hmms(save_dir=save_dir)
+        coding, _, _, _ = self.analyze_hmms(save_dir=save_dir)
         coding['exclude'] = coding.apply(lambda x: True if
                                          (x['exp_group'] == 'GFP' and
                                           x['cta_group'] == 'No CTA')
@@ -1586,7 +1595,7 @@ class HmmAnalysis(object):
             save_dir = self.save_dir
 
         best_hmms = self.get_best_hmms(save_dir=save_dir)
-        coding, timings, confusion = self.analyze_hmms(save_dir=save_dir)
+        coding, timings, confusion, mds = self.analyze_hmms(save_dir=save_dir)
         coding_fn = os.path.join(save_dir, 'HMM_coding.png')
         timing_fn = os.path.join(save_dir, 'HMM_timing.png')
         prob_fn = os.path.join(save_dir, 'HMM_Median_Gamma_Probs.png')
@@ -2586,8 +2595,8 @@ def apply_unit_firing_rates(df):
         else:
             spikes = sa
 
-        bidx = np.where(t < 0)[0]
-        ridx = np.where(t > 0)[0]
+        bidx = np.where((t < 0) & (t>-1000))[0]
+        ridx = np.where((t > 0) & (t<1500))[0]
         baseline = np.mean(np.sum(spikes[:,bidx], axis=1))
         response = np.mean(np.sum(spikes[:,ridx], axis=1))
         return pd.Series({'baseline_firing': baseline, 'response_firing': response})
@@ -2605,7 +2614,8 @@ def consolidate_results():
     os.mkdir(save_dir)
     sds = {'data': os.path.join(save_dir, 'data'),
            'plots': os.path.join(save_dir, 'plots'),
-           'stats': os.path.join(save_dir, 'stats')}
+           'stats': os.path.join(save_dir, 'stats'),
+           'source_data': os.path.join(save_dir, 'source_data')}
 
     for k,v in sds.items():
         os.mkdir(v)
@@ -2633,6 +2643,7 @@ def consolidate_results():
              os.path.join(d1, 'unit_firing_rates.svg'),
              os.path.join(d1, 'unit_firing_rates.txt'),
              os.path.join(d1, 'taste_responsive.svg'),
+             os.path.join(d1, 'taste_responsive_source_data.csv'),
              os.path.join(d1, 'taste_responsive-stats.svg'),
              os.path.join(d1, 'taste_responsive-stats.txt'),
              # Pal responsive
@@ -2641,6 +2652,7 @@ def consolidate_results():
              os.path.join(d1, 'Mean_Spearman-comparison.txt'),
              os.path.join(d1, 'Mean_Spearman-simple_comparison.svg'),
              os.path.join(d1, 'Mean_Spearman-simple_comparison.txt'),
+             os.path.join(d1, 'Mean_Spearman-simple_comparison_source_data.csv'),
              os.path.join(d1, 'Mean_Spearman-differences.svg'),
              os.path.join(d1, 'palatability_spearman_corr.svg'),
              os.path.join(d1, 'palatability_spearman_corr.txt'),
@@ -2683,6 +2695,7 @@ def consolidate_results():
              os.path.join(d5, 'Saccharin_late_start_distributions.txt'),
              os.path.join(d5, 'Saccharin_timing_comparison-exclude.svg'),
              os.path.join(d5, 'Saccharin_timing_comparison-exclude.txt'),
+             os.path.join(d5, 'Saccharin_timing_comparison-exclude_source_data.csv'),
              os.path.join(HA.save_dir, 'HMM_Median_Gamma_Probs.png'),
              os.path.join(HA.save_dir, 'HMM_Median_Gamma_Probs-exclude.svg'),
              os.path.join(HA.save_dir, 'HMM_parameters.txt'),
@@ -2693,6 +2706,8 @@ def consolidate_results():
              *PA.files.values(),
              HA.files['hmm_timings'].replace('.feather', '.txt'),
              os.path.join(HA.save_dir, 'bic_comparison.svg'),
+             os.path.join(HA.save_dir, 'bic_comparison.txt'),
+             os.path.join(HA.save_dir, 'bic_comparison_source_data.csv'),
              os.path.join(HA.save_dir, 'Saccharin_Sequences.svg'),
              # Held Unit Response changes
              os.path.join(d6, 'Saccharin_responses_changed-exclude.txt'),
@@ -2707,7 +2722,8 @@ def consolidate_results():
             ]
 
     ext_map = {'feather': 'data', 'npy': 'data', 'npz': 'data', 'p': 'data',
-               'svg': 'plots', 'png': 'plots', 'txt': 'stats', 'json': 'data'}
+               'svg': 'plots', 'png': 'plots', 'txt': 'stats', 'json': 'data',
+               'csv': 'source_data'}
     missing = []
     for f in files:
         fn, ext = os.path.splitext(f)

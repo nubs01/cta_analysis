@@ -197,14 +197,17 @@ def apply_mds_dist_metric(df):
         dN = ((Xn-x)**2 + (Yn - y)**2)**0.5
         dQ = ((Xq-x)**2 + (Yq-y)**2)**0.5
         dS = dQ/dN
-        dS2 = (dQ - dN)/dQN
+        dQ = dQ/dQN
+        dN = dN/dQN
+        dS2 = (dQ - dN)
         if np.isnan(dS.value):
             raise ValueError()
 
-        return pd.Series({'MDS_dQ_v_dN': dS.value, 'MDS_dQ_v_dN_sem': dS.delta,
-                          'MDS_dQ_minus_dN': dS2.value, 'MDS_dQ_minus_dN_sem':dS2.delta})
+        return pd.Series({'MDS_dQ': dQ.value, 'MDS_dN': dN.value, 'MDS_dQ_v_dN': dS.value,
+                          'MDS_dQ_v_dN_sem': dS.delta, 'MDS_dQ_minus_dN': dS2.value,
+                          'MDS_dQ_minus_dN_sem':dS2.delta})
 
-    sacc[['MDS_dQ_v_dN', 'MDS_dQ_v_dN_sem',
+    sacc[['MDS_dQ', 'MDS_dN', 'MDS_dQ_v_dN', 'MDS_dQ_v_dN_sem',
           'MDS_dQ_minus_dN', 'MDS_dQ_minus_dN_sem']] = sacc[['MDS1','MDS2']].apply(get_metric, axis=1)
 
     return sacc

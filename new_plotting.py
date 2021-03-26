@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import pylab as plt
-from scipy.stats import sem, norm, chi2_contingency, rankdata, spearmanr, chisquare
+from scipy.stats import sem, norm, chi2_contingency, rankdata, spearmanr, chisquare, kstest
+from statsmodels.stats.diagnostic import lilliefors
 import itertools as it
 from plotting import ORDERS, add_suplabels, change_hue
 import analysis_stats as stats
@@ -305,11 +306,13 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
         else:
             g3.legend(bbox_to_anchor=[1.2,1.2,0,0])
 
-        #n_cells = grp.groupby('grouping').size().to_dict()
-        n_cells = None
-        g1_y = plot_sig_stars(g1, id_gh_df, cond_order, n_cells=n_cells)
-        g2_y = plot_sig_stars(g2, pal_gh_df, cond_order, n_cells=n_cells)
-        g3_y = plot_sig_stars(g3, psc_gh_df, cond_order, n_cells=n_cells)
+        n_cells = grp.groupby('grouping').size().to_dict()
+        n_cells.update({x:y/50 for x,y in n_cells.items()}) # so I can see number of session involved
+        statistics[sg]['session_counts'] = n_cells
+        #n_cells = None
+        #g1_y = plot_sig_stars(g1, id_gh_df, cond_order, n_cells=n_cells)
+        #g2_y = plot_sig_stars(g2, pal_gh_df, cond_order, n_cells=n_cells)
+        #g3_y = plot_sig_stars(g3, psc_gh_df, cond_order, n_cells=n_cells)
 
     if save_file:
         fn, ext = os.path.splitext(save_file)
@@ -325,10 +328,15 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
     assert len(df.taste.unique()) == 1, 'Please run one taste at a time'
     df = df.copy().dropna(subset=[group_col, 'state_group', 'time_group',
                                   't_start', 't_end'])
-    df = df.query('valid == True')
+    df = df.query('valid == True').copy()
 
     # Make extra column for composite grouping
     df['grouping'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
+    source_data_cols = ['exp_name', 'exp_group', 'cta_group', 'time_group',
+                        'palatability', 'rec_group', 'n_cells', 'taste',
+                        'hmm_id', 'trial', 'state_group', 'state_num',
+                        't_start', 't_end', 'duration', 'pos_in_trial',
+                        'n_states']
 
     taste = df['taste'].unique()[0]
     states = df['state_group'].unique()
@@ -352,9 +360,11 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
     for (sg, vg), ax in zip(plot_grps, axes):
         grp = df.query('state_group == @sg')
         kw_stat, kw_p, gh_df = stats.kw_and_gh(grp, 'grouping', vg)
+        aov, ptt = stats.anova(grp, dv=vg, between=[group_col, 'time_group'])
         summary = grp.groupby(['exp_group', 'time_group'])[vg].describe()
         statistics[sg] = {titles[vg]: {'kw_stat': kw_stat, 'kw_p': kw_p,
-                                          'posthoc': gh_df, 'summary': summary}}
+                                       'posthoc': gh_df, 'summary': summary,
+                                       'anova': aov, 'posthoc t-tests': ptt}}
 
         g1 = plot_box_and_paired_points(grp, group_col, vg,
                                         'time_group', order=group_order,
@@ -378,9 +388,11 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
     if save_file:
         fn, ext = os.path.splitext(save_file)
         fn2 = fn + '.txt'
+        src_data_fn = fn + '_source_data.csv'
         fig.savefig(save_file)
         plt.close(fig)
         agg.write_dict_to_txt(statistics, save_file=fn2)
+        df.to_csv(src_data_fn, columns=source_data_cols, index=False)
     else:
         return fig, axes, statistics
 
@@ -402,7 +414,11 @@ def plot_timing_distributions(df, state='early', value_col='t_end', save_file=No
     labels = []
     dists = []
 
+    def drop_zero_cols(x):
+        return x[:, np.any(x != 0, axis=0)]
+
     fig, axes = plt.subplots(nrows=len(groups), figsize=(8,10))
+    fit_stats = {}
     for n1, group in df.groupby('grouping'):
         idx = groups.index(n1)
         ax = axes[idx]
@@ -413,6 +429,7 @@ def plot_timing_distributions(df, state='early', value_col='t_end', save_file=No
             x = np.linspace(0, 2000, 100)
             y = norm.pdf(x, mu, sig)
             counts, _ = np.histogram(data, bins=bins)
+            N = sum(counts)
             density, _ = np.histogram(data, bins=bins, density=True)
             y_fit = norm.pdf(bin_centers, mu, sig)
             labels.append('%s_%s' % (n1,n2))
@@ -426,8 +443,27 @@ def plot_timing_distributions(df, state='early', value_col='t_end', save_file=No
             ss_res = np.sum((density - y_fit) **2)
             ss_tot = np.sum((density - np.mean(density)) **2)
             r2 = 1 - (ss_res/ss_tot)
-            fit_str = r'$\mu$=%3.3g, $\sigma$=%3.3g, $r^{2}$=%0.3g' % (mu,sig,r2)
+            scale = np.max([x/y for x,y in zip(counts,density) if y !=0])
+            fit_counts = np.array([int(x*scale) for x in y_fit])
+            comp_counts = drop_zero_cols(np.vstack((counts,fit_counts)))
+            x2, x2p = lilliefors(data, 'norm')
+#            x2, x2p = chisquare(comp_counts[0], f_exp=comp_counts[1])
+#            if np.isinf(x2):
+#                x2, x2p = chisquare(comp_counts[1], f_exp=comp_counts[0])
+
+            fit_str = r'N=%i, $\mu$=%3.3g, $\sigma$=%3.3g, $r^{2}$=%0.3g' % (N, mu,sig,r2)
+            #if x2p <= 0.001:
+            #    fit_str += '***'
+            #elif x2p <= 0.01:
+            #    fit_str += '**'
+            #elif x2p <= 0.05:
+            #    fit_str += '*'
+
             ax.plot(x,y, color=colors[i], label=fit_str)
+            fit_stats[n1] = {'N': N, 'mu': mu, 'sig': sig, 'r2': r2,
+                             #'Lilliefors Stat': x2, 'p-value': x2p,
+                             'counts': counts, 'fit_counts': fit_counts,
+                             'density': density, 'fit_density': y_fit}
 
         ax.set_ylabel(n1)
         ax.legend()
@@ -455,8 +491,6 @@ def plot_timing_distributions(df, state='early', value_col='t_end', save_file=No
 
     # Get distributions and do stats and fits
     dists = np.vstack(dists)
-    def drop_zero_cols(x):
-        return x[:, np.any(x != 0, axis=0)]
 
     s, p, dof, exp = chi2_contingency(drop_zero_cols(dists))
     out_stats = {'omnibus': {'A': 'all', 'B': 'all', 'chi2 stat': s, 'pval': p}}
@@ -469,6 +503,7 @@ def plot_timing_distributions(df, state='early', value_col='t_end', save_file=No
         s, p = chisquare(x[0], f_exp=x[1])
         if np.isinf(s):
             s,p = chisquare(x[1], f_exp=x[0])
+
         # Bonferroni Correction
         p = p*npairs
         out_stats[f'{i}'] = {'A': A, 'B': B, 'chi2 stat': s, 'pval': p}
@@ -488,6 +523,7 @@ def plot_timing_distributions(df, state='early', value_col='t_end', save_file=No
     tmp = ['%s:  %s' % (x,y) for x,y in zip(labels, dists)]
     tmp = '\n' + '\n'.join(tmp) + '\n'
     out_stats['counts'] = tmp
+    out_stats['fit_stats'] = fit_stats
 
     if save_file:
         fig.savefig(save_file)
@@ -551,13 +587,17 @@ def plot_coding_data(df, save_file=None, group_col='exp_group',
     for sg, (id_ax, pal_ax) in zip(state_order, axes):
         grp = df.query('state_group == @sg')
         id_kw_stat, id_kw_p, id_gh_df = stats.kw_and_gh(grp, 'grouping', 'id_acc')
+        id_aov, id_ptt = stats.anova(grp, dv='id_acc', between=['exp_group', 'time_group'])
         pal_kw_stat, pal_kw_p, pal_gh_df = stats.kw_and_gh(grp, 'grouping', 'pal_acc')
+        pal_aov, pal_ptt = stats.anova(grp, dv='pal_acc', between=['exp_group', 'time_group'])
         id_sum = grp.groupby(['exp_group', 'time_group'])['id_acc'].describe()
         pal_sum = grp.groupby(['exp_group', 'time_group'])['pal_acc'].describe()
         statistics[sg] = {'id': {'kw_stat': id_kw_stat, 'kw_p': id_kw_p,
-                                 'posthoc': id_gh_df, 'summary': id_sum},
+                                 'posthoc': id_gh_df, 'summary': id_sum,
+                                 'anova': id_aov, 'posthoc t-tests': id_ptt},
                           'pal': {'kw_stat': pal_kw_stat, 'kw_p': pal_kw_p,
-                                  'posthoc': pal_gh_df, 'summary': pal_sum}}
+                                  'posthoc': pal_gh_df, 'summary': pal_sum,
+                                  'anova': pal_aov, 'posthoc t-tests': pal_ptt}}
 
         g1 = plot_box_and_paired_points(grp, group_col, 'id_acc',
                                         'time_group', order=group_order,
@@ -768,11 +808,18 @@ def plot_BIC(ho, proj, save_file=None):
     kw_s, kw_p, gh = stats.kw_and_gh(ho, 'n_states', 'BIC')
     #plot_sig_stars(g, gh, cond_order)
     statistics = {'BIC Stats': {'KW stat': kw_s, 'KW p': kw_p, 'games_howell': gh}}
+    src_cols = ['exp_name', 'exp_group', 'cta_group', 'rec_group',
+                'time_group', 'taste', 'channel', 'area', 'unit_type',
+                'time_start', 'time_end', 'hmm_id', 'dt', 'threshold',
+                'n_trials', 'n_states', 'n_repeats', 'n_iterations', 'n_cells',
+                'log_likelihood', 'cost', 'BIC']
     if save_file:
         fig.savefig(save_file)
         fn, ext = os.path.splitext(save_file)
         agg.write_dict_to_txt(statistics, fn+'.txt')
         plt.close(fig)
+        src_fn = fn + '_source_data.csv'
+        ho.to_csv(src_fn, columns=src_cols, index=False)
     else:
         return fig, ax, statistics
 
@@ -868,6 +915,16 @@ def plot_hmm_trial_breakdown(df, proj, save_file=None):
 
 def plot_taste_responsive_units(tasty_df, save_file=None):
     tasty_df = tasty_df[tasty_df['single_unit'] & (tasty_df['area'] == 'GC')].copy()
+    src_cols = ['exp_name', 'exp_group', 'cta_group', 'time_group',
+                'rec_group', 'rec_name', 'unit_name', 'unit_num', 'electrode',
+                'area', 'single_unit', 'regular_spiking', 'fast_spiking',
+                'intra_J3', 'held_unit_name', 'baseline_firing',
+                'response_firing', 'unit_type', 'taste', 'taste_responsive',
+                'response_p', 'response_f']
+    if save_file:
+        fn, ext = os.path.splitext(save_file)
+        tasty_df.to_csv(fn + '_source_data.csv', columns=src_cols, index=False)
+
     order = ORDERS['exp_group']
     hue_order = ORDERS['time_group']
     df = tasty_df.groupby(['exp_group', 'time_group',
@@ -1054,6 +1111,7 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
                                value_name='spearman_r')
 
     df = agg.apply_grouping_cols(df, proj)
+    df = df.drop_duplicates()
     # Drop Cre - No CTA
     df = df.query('exp_group != "Cre" or cta_group != "CTA"')
     df = df.copy()
@@ -1062,6 +1120,9 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     df['r2'] = df['spearman_r']**2
     df['resp_time'] = df['time_bin'].apply(lambda x: 'Early (0-750ms)' if x < 750
                                            else 'Late (750-2000ms)')
+    src_cols = ['exp_name', 'exp_group', 'cta_group', 'time_group',
+                'unit_num', 'time_bin', 'resp_time', 'spearman_r',
+                'r2']
 
     diff_df = stats.get_diff_df(df, ['exp_group', 'time_group', 'cta_group'],
                                 'resp_time', 'r2')
@@ -1106,8 +1167,8 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     plt.tight_layout()
 
     df['simple_groups'] = df.apply(lambda x: '%s_%s' % (x['exp_group'],
-                                                            x['cta_group']),
-                                                            axis=1)
+                                                        x['cta_group']),
+                                   axis=1)
     df['grouping'] = df.apply(lambda x: '%s_%s\n%s' % (x['exp_group'],
                                                        x['cta_group'],
                                                        x['time_group']), axis=1)
@@ -1126,7 +1187,9 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     g = sns.barplot(data=df, x='grouping', y='r2', hue='resp_time',
                     order=g_order, hue_order=o4, ax=ax)
     kw_s, kw_p, gh_df = stats.kw_and_gh(df, 'comp_grouping', 'r2')
-    statistics = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell posthoc': gh_df}
+    aov, ptt = stats.anova(df, dv='r2', between=['simple_groups', 'time_group'])
+    statistics = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell posthoc': gh_df,
+                  'anova': aov, 'posthoc t-tests': ptt}
     # Slim down gh_df to only comparisons I care about
     valid_gh = []
     for i,row in gh_df.iterrows():
@@ -1152,17 +1215,22 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     statistics['n_cells'] = tmp
 
     # Plot with simplified grouping
+    simp_df = df.query('exclude == False')
+    unique_bins = np.arange(125, 2000, 250)
+    # This line will make this analysis use non-overlapping bins only
+    #simp_df = simp_df[simp_df.time_bin.isin(unique_bins)].copy()
     fig4, ax = plt.subplots(figsize=(10,8))
     s_order = ['GFP_CTA', 'Cre_No CTA']
     g2_order = [f'{x}\n{y}' for x,y in it.product(s_order, o3)]
-    g = sns.barplot(data=df, x='simple_groups', y='r2', hue='time_group',
+    g = sns.barplot(data=simp_df, x='simple_groups', y='r2', hue='time_group',
                     order=s_order, hue_order=o3, ax=ax)
     ax.set_ylim([0,0.11])
-    kw_s, kw_p, gh_df = stats.kw_and_gh(df.query('exclude==False'), 'grouping', 'r2')
-    df['cells'] = df.apply(lambda x: '%s_%s_%s' % (x['exp_name'],
-                                                   x['time_group'],
-                                                   x['unit_num']), axis=1)
-    aov, ptt = stats.anova(df.query('exclude == False'), between=['exp_group', 'time_group'],
+    kw_s, kw_p, gh_df = stats.kw_and_gh(simp_df.query('exclude==False'), 'grouping', 'r2')
+    simp_df['cells'] = simp_df.apply(lambda x: '%s_%s_%s' % (x['exp_name'],
+                                                             x['time_group'],
+                                                             x['unit_num']), axis=1)
+    aov, ptt = stats.anova(simp_df.query('exclude == False'),
+                           between=['exp_group', 'time_group'],
                            within='time_bin', dv='r2', subject='cells')
     other_stats = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell psthoc':
                    gh_df, 'anova': aov, 't-tests': ptt}
@@ -1203,6 +1271,8 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
         fig4.savefig(fn2 + '.svg')
         agg.write_dict_to_txt(other_stats, fn2 + '.txt')
         plt.close(fig4)
+        src_fn = fn2 + '_source_data.csv'
+        simp_df.to_csv(src_fn, columns=src_cols, index=False)
 
         fn = fn.replace('comparison', 'differences.svg')
         fig3.savefig(fn)
@@ -1213,24 +1283,28 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
 
 def plot_MDS(df, value_col='MDS_dQ_v_dN', group_col='exp_group',
              ylabel='dQ/dN', save_file=None, kind='bar'):
-    order = ORDERS[group_col]
-    hue_order = ORDERS['time_group']
+    hue_order = ORDERS[group_col]
+    order = ORDERS['time_group']
     col_order = ORDERS['MDS_time']
     cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))]
     df['group_col'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
 
-    g = sns.catplot(data=df, y=value_col, x=group_col,
-                    hue='time_group', col='time', kind=kind, order=order,
-                    hue_order=hue_order, col_order=col_order)
+    g = sns.catplot(data=df, y=value_col, hue=group_col,
+                    x='time_group', col='time', kind=kind, order=order,
+                    hue_order=hue_order, col_order=col_order, dodge=True)
 
     axes = g.axes[0]
     statistics = {}
     for ax, (tg, grp) in zip(axes, df.groupby('time')):
         kw_s, kw_p, gh_df = stats.kw_and_gh(grp, 'group_col', value_col)
+        aov, ptt = stats.anova(grp, dv=value_col, between=[group_col, 'time_group'])
+        descrip = grp.groupby([group_col, 'time_group'])[value_col].describe()
         statistics[tg] = {'kw-stat': kw_s, 'kw-p': kw_p,
-                          'Games-Howell posthoc': gh_df}
+                          'description': descrip,
+                          'Games-Howell posthoc': gh_df,
+                          'anova': aov, 'posthoc t-tests': ptt}
         n_cells = grp.groupby('group_col').size().to_dict()
-        plot_sig_stars(ax, gh_df, cond_order, n_cells=n_cells)
+        #plot_sig_stars(ax, gh_df, cond_order, n_cells=n_cells)
         ax.set_title(tg)
         if ax.is_first_col():
             ax.set_ylabel(ylabel)

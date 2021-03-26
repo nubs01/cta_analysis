@@ -4,6 +4,7 @@ from scipy.ndimage.filters import gaussian_filter1d
 from blechpy.analysis import poissonHMM as ph
 from blechpy import load_dataset
 from blechpy.dio import hmmIO
+from sklearn.manifold import MDS
 from blechpy.utils.particles import AnonHMMInfoParticle
 from scipy.stats import mode
 import numpy as np
@@ -16,6 +17,7 @@ import pingouin
 from joblib import Parallel, delayed, cpu_count
 from collections import Counter
 import aggregation as agg
+from scipy.spatial.distance import euclidean
 
 
 def deduce_state_order(best_paths):
@@ -665,7 +667,7 @@ def write_id_pal_to_text(save_file, group, early_id=None,
 ## Helper Functions ##
 
 def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50,
-                           remove_baseline=False, other_state=None):
+                           remove_baseline=False, other_state=None, no_prestim=False):
     '''returns an Trials x Neurons array of firing rates giving the mean firing
     rate of each neuron in the first instance of state in each trial
 
@@ -718,7 +720,9 @@ def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50,
 
     # both states must be present for at least 50ms each post-stimulus
     check_states = [state, other_state] if other_state else [state]
-    valid_trials = agg.get_valid_trials(seqs, check_states, min_pts= 50/(dt*1000), time=time)
+    valid_trials = agg.get_valid_trials(seqs, check_states,
+                                        min_pts=int(min_dur/(dt*1000)),
+                                        time=time)
 
     # spike_array is trial x neuron x time
     n_trials, n_cells, n_steps = spike_array.shape
@@ -748,6 +752,12 @@ def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50,
 
         t1 = time[idx1]
         t2 = time[idx2]
+        # I don't need pre-stimulus data for coding and confusion analysis
+        if (t1 < 0) and (t2 > 0) and no_prestim:
+            t1 = 0
+        elif (t1 < 0) and (t2 < 0) and no_prestim:
+            continue
+
         # Skip trial if this particular state is shorter than min_dur
         # This is because a state this short a) can't provide a good firing
         # rate and b) is probably forced by the constraints and not real
@@ -766,7 +776,7 @@ def get_state_firing_rates(rec_dir, hmm_id, state, units=None, min_dur=50,
 
 
 def get_classifier_data(group, label_col, state_col, all_units,
-                        remove_baseline=False, other_state_col=None):
+                        remove_baseline=False, other_state_col=None, no_prestim=False):
     units = get_common_units(group, all_units)
     if units == {}:
         return None, None, None
@@ -789,7 +799,7 @@ def get_classifier_data(group, label_col, state_col, all_units,
         tmp_r, tmp_trials = get_state_firing_rates(rec_dir, hmm_id, state,
                                                    units=un,
                                                    remove_baseline=remove_baseline,
-                                                   other_state=state2)
+                                                   other_state=state2, no_prestim=no_prestim)
         tmp_l = np.repeat(row[label_col], tmp_r.shape[0])
         tmp_id = [(rec_dir, hmm_id, row[label_col], x) for x in tmp_trials]
         if len(tmp_r) == 0:
@@ -1977,6 +1987,74 @@ def run_classifier(train, train_labels, test, test_labels, classifier=stats.NBCl
     return accuracy, predictions
 
 
+def hmm_mds_analysis(best_hmms, all_units, area='GC', single_unit=True):
+    out_keys = ['exp_name', 'exp_group', 'time_group', 'cta_group',
+                'state_group', 'taste', 'trial', 'n_held_cells',
+                'dQ', 'dNa', 'dCA', 'dSacc', 'nacl_trials', 'quinine_trials',
+                'sacc_trials', 'ca_trials']
+    # exclude sessions with <3 cells and sessions with <2 held units over pre or post
+    # exclude trials that don't contain both early and late states
+    all_units = all_units.query('(area == @area) and (single_unit == @single_unit)')
+    best_hmms = best_hmms.dropna(subset=['hmm_id', 'early_state', 'late_state'])
+    best_hmms = best_hmms.query('n_cells >= 3 and taste != "Water"').copy()
+    other_state = {'early_state': 'late_state', 'late_state': 'early_state'}
+    tastes = ['NaCl', 'Quinine', 'Saccharin', 'Citric Acid']
+    taste_map = {'dQ': 'Quinine', 'dNa': 'NaCl',
+                 'dCA': 'Citric Acid', 'dSacc': 'Saccharin'}
+    states = ['early_state', 'late_state']
+    id_cols = ['exp_name', 'exp_group', 'time_group', 'cta_group']
+    template = dict.fromkeys(out_keys)
+    out = []
+    for name,group in best_hmms.groupby(id_cols):
+        for state_col in states:
+            tmp = template.copy()
+            for k,v in zip(id_cols, name):
+                tmp[k] = v
+
+            tmp['state_group'] = state_col.replace('_state','')
+
+            if group.taste.isin(tastes).sum() != len(tastes):
+                continue
+
+            group = group[group.taste.isin(tastes)]
+            labels, rates, identifiers = get_classifier_data(group, 'taste',
+                                                             state_col,
+                                                             all_units,
+                                                             remove_baseline=True,
+                                                             other_state_col=other_state[state_col])
+            #identifiers: rec_dir, hmm_id, taste, trial
+            trials = Counter(labels)
+            if rates is None or any([trials[x] < 2 for x in tastes]):
+                # if no valid trials were found for NaCl, Quinine or Saccharin
+                continue
+
+            tmp['n_held_cells'] = rates.shape[1]
+            tmp['nacl_trials'] = trials['NaCl']
+            tmp['ca_trials'] = trials['Citric Acid']
+            tmp['quinine_trials'] = trials['Quinine']
+            tmp['sacc_trials'] = trials['Saccharin']
+
+            mds = MDS(n_components=2)
+            mds_values = mds.fit_transform(rates)
+
+            means = {}
+            for t in tastes:
+                idx = np.where(labels == t)[0]
+                means[t] = np.mean(mds_values[idx,:], axis=0)
+
+            norm_factor = euclidean(means['NaCl'], means['Quinine'])
+            for X, (rd, hmm_id, tst, trial) in zip(mds_values, identifiers):
+                tmp2 = tmp.copy()
+                tmp2['taste'] = tst
+                tmp2['trial'] = trial
+                for k,v in taste_map.items():
+                    tmp2[k] = euclidean(X, means[v])/norm_factor
+
+                out.append(tmp2)
+
+    return pd.DataFrame(out)
+
+
 def saccharin_confusion_analysis(best_hmms, all_units, area='GC',
                                  single_unit=True, repeats=20):
     '''create output dataframe with columns: exp_name, time_group, exp_group,
@@ -2018,11 +2096,15 @@ def saccharin_confusion_analysis(best_hmms, all_units, area='GC',
                                                              state_col,
                                                              all_units,
                                                              remove_baseline=True,
-                                                             other_state_col=other_state[state_col])
+                                                             other_state_col=other_state[state_col],
+                                                             no_prestim=True)
             trials = Counter(labels)
-            if rates is None or any([trials[x] < 2 for x in id_tastes]):
+            if rates is None or any([trials[x] < 3 for x in id_tastes]):
                 # if no valid trials were found for NaCl, Quinine or Saccharin
                 continue
+
+            if any([trials[x] < 3 for x in pal_tastes]):
+                run_pal = False
 
             tmp['n_cells'] = rates.shape[1]
             tmp['nacl_trials'] = trials['NaCl']
