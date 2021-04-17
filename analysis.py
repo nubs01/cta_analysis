@@ -24,6 +24,7 @@ from blechpy.utils import write_tools as wt
 import pylab as pyplt
 from datetime import datetime
 from tqdm import tqdm
+from statsmodels.stats.weightstats import CompareMeans
 from joblib import parallel_backend
 
 PAL_MAP = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
@@ -229,6 +230,8 @@ class ProjectAnalysis(object):
             alpha = params['response_comparison']['alpha']
             labels = [] # List of tuples: (exp_group, exp_name, cta_group, held_unit_name, taste)
             pvals = []
+            ci_low = []
+            ci_high = []
             differences = []
             sem_diffs = []
             test_stats = []
@@ -256,13 +259,15 @@ class ProjectAnalysis(object):
                     exp_name = row['exp_name']
                     print('Comparing Held Unit %s, %s vs %s' % (held_unit_name, row['rec_name'], post_row['rec_name']))
 
-                    tastes, pvs, tstat, md, md_sem, ctime, dtime = \
+                    tastes, pvs, tstat, md, md_sem, ctime, dtime, low, high = \
                             compare_taste_responses(rec1, unit1, rec2, unit2,
                                                     params, method='anova')
                     l = [(exp_group, exp_name, learn_map[exp_name],
                           held_unit_name, t) for t in tastes]
                     labels.extend(l)
                     pvals.extend(pvs)
+                    ci_low.extend(low)
+                    ci_high.extend(high)
                     test_stats.extend(tstat)
                     differences.extend(md)
                     sem_diffs.extend(md_sem)
@@ -301,6 +306,8 @@ class ProjectAnalysis(object):
 
             labels = np.vstack(labels) # exp_group, exp_name, cta_group, held_unit_name, taste
             pvals = np.vstack(pvals)
+            ci_low = np.vstack(ci_low)
+            ci_high = np.vstack(ci_high)
             test_stats = np.vstack(test_stats)
             differences = np.vstack(differences)
             sem_diffs = np.vstack(sem_diffs)
@@ -308,7 +315,8 @@ class ProjectAnalysis(object):
             # Stick it all in an npz file
             np.savez(save_file, labels=labels, pvals=pvals, test_stats=test_stats,
                      mean_diff=differences, sem_diff=sem_diffs,
-                     comp_time=comp_time, diff_time=diff_time)
+                     comp_time=comp_time, diff_time=diff_time, ci_low=ci_low,
+                     ci_high=ci_high)
             data = np.load(save_file)
             return data
 
@@ -335,8 +343,12 @@ class ProjectAnalysis(object):
         diff_time = data['diff_time']
         tastes = np.unique(labels[:, -1])
         all_df = hf.make_tidy_response_change_data(labels, pvals, comp_time, alpha=alpha)
+        all_df = agg.apply_grouping_cols(all_df, self.project)
+        save_cols = ['exp_name', 'exp_group', 'cta_group', 'taste', 'time',
+                     'time_bin', 'n_diff', 'n_same', 'exclude']
         all_df.to_csv(os.path.join(save_dir,
                                    'held_unit_response_change_data.csv'),
+                      columns=save_cols,
                       index=False)
 
         # Make aggregate plots
@@ -581,8 +593,8 @@ class ProjectAnalysis(object):
 
         metric_data = agg.apply_grouping_cols(metric_data, self.project)
         metric_data = metric_data.query('exclude == False')
-        fn = os.path.join(mds_dir, 'Saccharin_MDS_distances.svg')
-        nplt.plot_MDS(metric_data, save_file=fn)
+        #fn = os.path.join(mds_dir, 'Saccharin_MDS_distances.svg')
+        #nplt.plot_MDS(metric_data, save_file=fn)
         fn = os.path.join(mds_dir, 'Saccharin_MDS_distances-alternate.svg')
         nplt.plot_MDS(metric_data, save_file=fn, ylabel='dQ-dN',
                       value_col='MDS_dQ_minus_dN', kind='point')
@@ -1490,6 +1502,12 @@ class HmmAnalysis(object):
                                        state='late', value_col='t_start',
                                        save_file=dist_file)
 
+        # Plot mean late state gamma probabilities
+        print('Plotting Saccharin late state probabilities...')
+        best_hmms = self.get_best_hmms(save_dir=save_dir)
+        fn = os.path.join(plot_dir, 'Saccharin_Mean_Late_State_Probabilities.svg')
+        nplt.plot_gamma_probs(best_hmms, state='late', taste='Saccharin', save_file=fn)
+
         for taste, grp in df.groupby('taste'):
             # plot distributions
             fn1 = os.path.join(plot_dir, f'{taste}_early_end_distributions.svg')
@@ -2004,7 +2022,7 @@ class Analysis(object):
         pass
 
 
-def compare_taste_responses(rec1, unit1, rec2, unit2, params, method='bootstrap'):
+def compare_taste_responses(rec1, unit1, rec2, unit2, params, method='anova'):
     bin_size = params['response_comparison']['win_size']
     step_size = params['response_comparison']['step_size']
     time_start = params['response_comparison']['time_win'][0]
@@ -2023,6 +2041,8 @@ def compare_taste_responses(rec1, unit1, rec2, unit2, params, method='bootstrap'
     out_ustats = []
     out_diff = []
     out_diff_sem = []
+    out_diff_low = []
+    out_diff_high = []
     bin_time = None
     for taste, row in dig1.iterrows():
         ch1 = row['channel']
@@ -2049,18 +2069,25 @@ def compare_taste_responses(rec1, unit1, rec2, unit2, params, method='bootstrap'
             nt = len(t1)
             pvals = np.ones((nt,))
             ustats = np.zeros((nt,))
+            diff_low = np.zeros((nt,))
+            diff_high = np.zeros((nt,))
             for i, y in enumerate(zip(fr1.T, fr2.T)):
                 # u, p = mann_whitney_u(y[0], y[1])
                 # Mann-Whitney U gave odd results, trying anova
                 u, p = f_oneway(y[0], y[1])
                 pvals[i] = p
                 ustats[i] = u
+                cm = CompareMeans.from_data(y[0], y[1])
+                low, high = cm.tconfint_diff(alpha=0.05, usevar='unequal')
+                diff_low[i] = low
+                diff_high[i] = high
         elif method.lower() == 'bootstrap':
-            nt = len(t1)
-            tmp_lbls = np.vstack(fr1.shape[0]*['u1'] + fr2.shape[0]*['u2'])
-            tmp_data = np.vstack((fr1,fr2))
-            pvals, ustats, _ = stats.permutation_test(tmp_lbls, tmp_data,
-                                                      alpha)
+            raise ValueError('bootstrap comparison method is deprecated')
+            #nt = len(t1)
+            #tmp_lbls = np.vstack(fr1.shape[0]*['u1'] + fr2.shape[0]*['u2'])
+            #tmp_data = np.vstack((fr1,fr2))
+            #pvals, ustats, _ = stats.permutation_test(tmp_lbls, tmp_data,
+            #                                          alpha)
 
         # apply bonferroni correction
         pvals = pvals*nt
@@ -2084,8 +2111,10 @@ def compare_taste_responses(rec1, unit1, rec2, unit2, params, method='bootstrap'
         out_diff.append(diff)
         out_diff_sem.append(sem_diff)
         out_labels.append(taste)
+        out_diff_low.append(diff_low)
+        out_diff_high.append(diff_high)
 
-    return out_labels, out_pvals, out_ustats, out_diff, out_diff_sem, bin_time, pt1
+    return out_labels, out_pvals, out_ustats, out_diff, out_diff_sem, bin_time, pt1, out_diff_low, out_diff_high
 
 
 def parse_rec(rd):
@@ -2641,6 +2670,7 @@ def consolidate_results():
              os.path.join(d8, 'pc_dQ_v_dN_data.feather'),
              # Taste responsive
              os.path.join(d1, 'unit_firing_rates.svg'),
+             os.path.join(d1, 'unit_firing_rates.csv'),
              os.path.join(d1, 'unit_firing_rates.txt'),
              os.path.join(d1, 'taste_responsive.svg'),
              os.path.join(d1, 'taste_responsive_source_data.csv'),
@@ -2665,6 +2695,7 @@ def consolidate_results():
              os.path.join(d2, 'Saccharin_MDS_distances.svg'),
              os.path.join(d2, 'Saccharin_MDS_distances.txt'),
              os.path.join(d2, 'Saccharin_MDS_distances-alternate.svg'),
+             os.path.join(d2, 'Saccharin_MDS_distances-alternate.csv'),
              os.path.join(d2, 'Saccharin_MDS_distances-alternate.txt'),
              os.path.join(d2, 'FullDim_MDS_distances.svg'),
              os.path.join(d2, 'FullDim_MDS_distances.txt'),
@@ -2696,6 +2727,8 @@ def consolidate_results():
              os.path.join(d5, 'Saccharin_timing_comparison-exclude.svg'),
              os.path.join(d5, 'Saccharin_timing_comparison-exclude.txt'),
              os.path.join(d5, 'Saccharin_timing_comparison-exclude_source_data.csv'),
+             os.path.join(d5, 'Saccharin_Mean_Late_State_Probabilities.svg'),
+             os.path.join(d5, 'Saccharin_Mean_Late_State_Probabilities_source_data.csv'),
              os.path.join(HA.save_dir, 'HMM_Median_Gamma_Probs.png'),
              os.path.join(HA.save_dir, 'HMM_Median_Gamma_Probs-exclude.svg'),
              os.path.join(HA.save_dir, 'HMM_parameters.txt'),
@@ -2710,6 +2743,9 @@ def consolidate_results():
              os.path.join(HA.save_dir, 'bic_comparison_source_data.csv'),
              os.path.join(HA.save_dir, 'Saccharin_Sequences.svg'),
              # Held Unit Response changes
+             os.path.join(d6, 'held_unit_response_change_data.csv'),
+             os.path.join(d6, 'response_change_data.npz'),
+             os.path.join(d6, 'complete_response_change_data.csv'),
              os.path.join(d6, 'Saccharin_responses_changed-exclude.txt'),
              os.path.join(d6, 'Saccharin_responses_changed-Cre_v_BadGFP.txt'),
              os.path.join(d6, 'Saccharin_responses_changed-GFP_v_GFP.txt'),
@@ -2718,12 +2754,13 @@ def consolidate_results():
              os.path.join(d7, 'Saccharin_responses_changed-GFP_v_GFP.svg'),
              os.path.join(HA.save_dir, 'hmm_trial_breakdown.feather'),
              os.path.join(PA.save_dir, 'Saccharin_consumption.svg'),
-             os.path.join(PA.save_dir, 'Saccharin_consumption.txt')
+             os.path.join(PA.save_dir, 'Saccharin_consumption.txt'),
+             os.path.join(HA.root_dir, 'All_spike_and_HMM_data.hdf5'),
             ]
 
     ext_map = {'feather': 'data', 'npy': 'data', 'npz': 'data', 'p': 'data',
                'svg': 'plots', 'png': 'plots', 'txt': 'stats', 'json': 'data',
-               'csv': 'source_data'}
+               'csv': 'source_data', 'hdf5': 'source_data'}
     missing = []
     for f in files:
         fn, ext = os.path.splitext(f)
@@ -2738,6 +2775,63 @@ def consolidate_results():
     for f in missing:
         print(f'Missing file: {f}\n')
 
+def package_hmm_data(HA, sorting='params #5'):
+    sorted_df = HA.get_sorted_hmms()
+    df = sorted_df.query('sorting == @sorting').copy()
+    df = df.query('n_cells >= 3').copy()
+    df = agg.apply_grouping_cols(df, HA.project)
+    cols = ['exp_name', 'rec_dir', 'rec_group', 'exp_group', 'time_group',
+            'cta_group', 'taste', 'channel', 'palatability', 'hmm_id',
+            'hmm_class', 'unit_type', 'area', 'n_states', 'n_cells',
+            'n_repeats', 'n_iterations', 'n_trials', 'threshold', 'time_start',
+            'time_end', 'dt', 'BIC', 'log_likelihood', 'max_log_prob',
+            'cost', 'early_state', 'late_state', 'exclude', 'notes']
+    df = df[cols].copy()
+
+    proj_cols = ['exp_name', 'exp_group', 'saccharin_consumption',
+                 'CTA_learned', 'cta_group', 'exclude']
+    proj_info = HA.project._exp_info.dropna()[proj_cols]
+    fn = os.path.join(HA.root_dir, 'All_spike_and_HMM_data.hdf5')
+    phmm.package_project_data(df, fn, experiment_info=proj_info)
+
+def package_response_change_data(PA):
+    fn = os.path.join(PA.root_dir, 'single_unit_analysis',
+                      'held_unit_response_changes', 'response_change_data.npz')
+    save_fn = os.path.join(PA.root_dir, 'single_unit_analysis',
+                           'held_unit_response_changes',
+                           'complete_response_change_data.csv')
+    data = np.load(fn)
+    time = data['comp_time']
+    pvals = data['pvals']
+    F = data['test_stats']
+    ci_low = data['ci_low']
+    ci_high = data['ci_high']
+    labels = data['labels']
+    label_names = ['exp_group', 'exp_name', 'cta_group', 'held_unit_name', 'taste']
+    mi = pd.MultiIndex.from_frame(pd.DataFrame(labels, columns=label_names))
+    p_df = pd.DataFrame(pvals, index=mi, columns=time)
+    f_df = pd.DataFrame(F, index=mi, columns=time)
+    l_df = pd.DataFrame(ci_low, index=mi, columns=time)
+    h_df = pd.DataFrame(ci_high, index=mi, columns=time)
+
+    p_df = p_df.reset_index().melt(id_vars=label_names, value_vars=time,
+                                   var_name='time', value_name='p')
+    f_df = f_df.reset_index().melt(id_vars=label_names, value_vars=time,
+                                   var_name='time', value_name='F')
+    l_df = l_df.reset_index().melt(id_vars=label_names, value_vars=time,
+                                   var_name='time', value_name='95CI_low')
+    h_df = h_df.reset_index().melt(id_vars=label_names, value_vars=time,
+                                   var_name='time', value_name='95CI_high')
+    merge_cols = [*label_names, 'time']
+    df = pd.merge(p_df, f_df, on=merge_cols)
+    df = pd.merge(df, l_df, on=merge_cols)
+    df = pd.merge(df, h_df, on=merge_cols)
+    #df = agg.apply_grouping_cols(df, PA.project)
+
+    # only saccharin
+    #df = df.query('taste == "Saccharin"')
+
+    df.to_csv(save_fn, index=False)
 
 if __name__=="__main__":
     print('Hello World')

@@ -1,3 +1,4 @@
+import glob
 import blechpy
 import os
 import numpy as np
@@ -413,6 +414,7 @@ def summarize_sequence(path):
 
     return np.array(out)
 
+
 def write_dict_to_txt(dat, save_file=None, tabs=0):
     out = []
     for k,v in dat.items():
@@ -499,3 +501,11 @@ def apply_exclude(row):
         return True
 
     return False
+
+
+def get_hmm_h5(rec_dir):
+    tmp = glob.glob(rec_dir + os.sep + '**' + os.sep + '*HMM_Analysis.hdf5', recursive=True)
+    if len(tmp)>1:
+        raise ValueError(str(tmp))
+
+    return tmp[0]

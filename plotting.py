@@ -17,7 +17,6 @@ from matplotlib.patches import Ellipse, Patch
 import itertools as it
 import matplotlib.colors as mc
 import colorsys
-import glob
 
 
 TASTE_COLORS = {'Saccharin': 'tab:purple', 'Quinine': 'tab:red',
@@ -1311,7 +1310,7 @@ def plot_hmm_sequence_heatmap(best_hmms, group_col, save_file=None, cmap='icefir
         row_id = []
         sort_stat = []
         for i, row in df.iterrows():
-            h5_file = get_hmm_h5(row['rec_dir'])
+            h5_file = agg.get_hmm_h5(row['rec_dir'])
             hmm, time, params = phmm.load_hmm_from_hdf5(h5_file, row['hmm_id'])
             if time_vec is None:
                 time_vec = time
@@ -1391,7 +1390,7 @@ def plot_classifier_results(group, early_res, late_res,
     rec_dir = group.rec_dir.unique()[0]
     rec_name = os.path.basename(rec_dir).split('_')
     rec_name = '_'.join(rec_name[:-2])
-    h5_file = get_hmm_h5(rec_dir)
+    h5_file = agg.get_hmm_h5(rec_dir)
     title = rec_name
     title += ('\nEarly Acc.: %0.2f%%, Late Acc.: %0.2f%%'
               % (early_res.accuracy, late_res.accuracy))
@@ -1505,7 +1504,7 @@ def plot_pal_classifier_results(group, early_res, late_res,
     rec_dir = group.rec_dir.unique()[0]
     rec_name = os.path.basename(rec_dir).split('_')
     rec_name = '_'.join(rec_name[:-2])
-    h5_file = get_hmm_h5(rec_dir)
+    h5_file = agg.get_hmm_h5(rec_dir)
     title = rec_name
     title += ('\nEarly Acc.: %0.2f%%, Late Acc.: %0.2f%%'
               % (early_res.accuracy, late_res.accuracy))
@@ -1574,14 +1573,6 @@ def change_hue(color, amount):
         
     c = colorsys.rgb_to_hls(*mc.to_rgb(c))
     return colorsys.hls_to_rgb(c[0], 1 - amount * (1 - c[1]), c[2])
-
-
-def get_hmm_h5(rec_dir):
-    tmp = glob.glob(rec_dir + os.sep + '**' + os.sep + '*HMM_Analysis.hdf5', recursive=True)
-    if len(tmp)>1:
-        raise ValueError(str(tmp))
-
-    return tmp[0]
 
 
 def plot_hmm_sequences(hmm, time, n_baseline=None, row_id=None, save_file=None):
@@ -1911,7 +1902,7 @@ def plot_median_gamma_probs(best_hmms, save_file=None):
                 continue
 
             anim, rec_group, taste = row[['exp_name', 'rec_group', 'taste']]
-            h5_file = get_hmm_h5(row['rec_dir'])
+            h5_file = agg.get_hmm_h5(row['rec_dir'])
             hmm, t, params = phmm.load_hmm_from_hdf5(h5_file, int(row['hmm_id']))
             es = int(row['early_state'])
             ls = int(row['late_state'])
@@ -2006,7 +1997,7 @@ def plot_mean_gamma_probs(best_hmms, save_file=None):
                 continue
 
             anim, rec_group, taste = row[['exp_name', 'rec_group', 'taste']]
-            h5_file = get_hmm_h5(row['rec_dir'])
+            h5_file = agg.get_hmm_h5(row['rec_dir'])
             hmm, t, params = phmm.load_hmm_from_hdf5(h5_file, int(row['hmm_id']))
             es = int(row['early_state'])
             ls = int(row['late_state'])

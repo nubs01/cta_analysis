@@ -327,10 +327,11 @@ def plot_confusion_data(df, save_file=None, group_col='exp_group', kind='bar',
 def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot_points=False):
     assert len(df.taste.unique()) == 1, 'Please run one taste at a time'
     df = df.copy().dropna(subset=[group_col, 'state_group', 'time_group',
-                                  't_start', 't_end'])
+                                  't_start', 't_end', 'duration'])
     df = df.query('valid == True').copy()
 
     # Make extra column for composite grouping
+    df['duration'] = df.apply(lambda x: x['t_end'] - max(x['t_start'], 0), axis=1)
     df['grouping'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
     source_data_cols = ['exp_name', 'exp_group', 'cta_group', 'time_group',
                         'palatability', 'rec_group', 'n_cells', 'taste',
@@ -352,8 +353,8 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
     fig = plt.figure(figsize=(11,7))
     outer_ax = add_suplabels(fig, f'{taste} HMM Timing Analysis', '',
                              'transition time (ms)')
-    plot_grps = [('early', 't_end'), ('late', 't_start')]
-    titles = {'t_end': 'End Times', 't_start': 'Start Times'}
+    plot_grps = [('early', 't_end'), ('early', 'duration')]
+    titles = {'t_end': 'End Times', 't_start': 'Start Times', 'duration': 'Span'}
     axes = np.array([fig.add_subplot(1, len(plot_grps), i+1)
                      for i in range(len(plot_grps))])
     statistics = {}
@@ -362,9 +363,12 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
         kw_stat, kw_p, gh_df = stats.kw_and_gh(grp, 'grouping', vg)
         aov, ptt = stats.anova(grp, dv=vg, between=[group_col, 'time_group'])
         summary = grp.groupby(['exp_group', 'time_group'])[vg].describe()
-        statistics[sg] = {titles[vg]: {'kw_stat': kw_stat, 'kw_p': kw_p,
-                                       'posthoc': gh_df, 'summary': summary,
-                                       'anova': aov, 'posthoc t-tests': ptt}}
+        if sg not in statistics.keys():
+            statistics[sg] = {}
+
+        statistics[sg][titles[vg]] = {'kw_stat': kw_stat, 'kw_p': kw_p,
+                                      'posthoc': gh_df, 'summary': summary,
+                                      'anova': aov, 'posthoc t-tests': ptt}
 
         g1 = plot_box_and_paired_points(grp, group_col, vg,
                                         'time_group', order=group_order,
@@ -383,7 +387,8 @@ def plot_timing_data(df, save_file=None, group_col='exp_group', kind='bar', plot
             g1.legend_.remove()
 
         n_cells = grp.groupby('grouping').size().to_dict()
-        g1_y = plot_sig_stars(g1, gh_df, cond_order, n_cells=n_cells)
+        if kind == 'bar':
+            g1_y = plot_sig_stars(g1, gh_df, cond_order, n_cells=n_cells)
 
     if save_file:
         fn, ext = os.path.splitext(save_file)
@@ -500,6 +505,7 @@ def plot_timing_distributions(df, state='early', value_col='t_end', save_file=No
         i1 = labels.index(A)
         i2 = labels.index(B)
         x = drop_zero_cols(dists[[i1,i2]])
+        x[1] = np.sum(x[0])*x[1]/np.sum(x[1])
         s, p = chisquare(x[0], f_exp=x[1])
         if np.isinf(s):
             s,p = chisquare(x[1], f_exp=x[0])
@@ -1217,23 +1223,30 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     # Plot with simplified grouping
     simp_df = df.query('exclude == False')
     unique_bins = np.arange(125, 2000, 250)
+
     # This line will make this analysis use non-overlapping bins only
-    #simp_df = simp_df[simp_df.time_bin.isin(unique_bins)].copy()
+    simp_df = simp_df[simp_df.time_bin.isin(unique_bins)].copy()
+
     fig4, ax = plt.subplots(figsize=(10,8))
     s_order = ['GFP_CTA', 'Cre_No CTA']
     g2_order = [f'{x}\n{y}' for x,y in it.product(s_order, o3)]
     g = sns.barplot(data=simp_df, x='simple_groups', y='r2', hue='time_group',
                     order=s_order, hue_order=o3, ax=ax)
     ax.set_ylim([0,0.11])
-    kw_s, kw_p, gh_df = stats.kw_and_gh(simp_df.query('exclude==False'), 'grouping', 'r2')
+    kw_s, kw_p, gh_df = stats.kw_and_gh(simp_df, 'grouping', 'r2')
     simp_df['cells'] = simp_df.apply(lambda x: '%s_%s_%s' % (x['exp_name'],
                                                              x['time_group'],
                                                              x['unit_num']), axis=1)
-    aov, ptt = stats.anova(simp_df.query('exclude == False'),
+    aov, ptt = stats.anova(simp_df,
                            between=['exp_group', 'time_group'],
                            within='time_bin', dv='r2', subject='cells')
+    counts = simp_df.groupby(['simple_groups', 'time_group']).size()
+    tmp = simp_df.groupby(['exp_name', 'exp_group', 'time_group'])['unit_num']
+    tmp = tmp.agg(lambda x: len(np.unique(x)))
+    tmp = tmp.groupby(['exp_group', 'time_group']).sum().reset_index()
+    tmp = tmp.rename(columns={'unit_num': 'n_cells'})
     other_stats = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell psthoc':
-                   gh_df, 'anova': aov, 't-tests': ptt}
+                   gh_df, 'anova': aov, 't-tests': ptt, 'counts': counts, 'n_cells': tmp}
     #Everything is significant, just add in illustrator
     #plot_sig_stars(ax, gh_df, g2_order)
 
@@ -1320,6 +1333,11 @@ def plot_MDS(df, value_col='MDS_dQ_v_dN', group_col='exp_group',
         plt.close(g.fig)
         fn, ext = os.path.splitext(save_file)
         agg.write_dict_to_txt(statistics, fn+'.txt')
+        src_cols = ['exp_name', 'exp_group', 'cta_group', 'time_group',
+                    'taste', 'trial', 'time', 'n_cells', 'MDS1', 'MDS2',
+                    'MDS_dQ', 'MDS_dN', value_col]
+        src_fn = fn+'.csv'
+        df.to_csv(src_fn, columns=src_cols, index=False)
     else:
         return g, statistics
 
@@ -1401,6 +1419,7 @@ def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
     ups_sem = df.groupby(['exp_name', 'rec_group']).size().sem()
     statistics = {'units per session': '%1.2f ± %1.2f' % (ups, ups_sem),
                   'units per group': df.groupby('exp_group').size().to_dict()}
+    orig_df = df.copy()
     value_cols = ['baseline_firing', 'response_firing', 'norm_response_firing']
     id_cols = ['exp_name', 'exp_group', 'rec_group', 'area', 'unit_type', 'time_group', 'cta_group']
     df = df.melt(id_vars=id_cols, value_vars=value_cols,
@@ -1449,10 +1468,17 @@ def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
     g.fig.suptitle('Unit Firing Rates (Hz)')
     if save_file:
         fn, ext = os.path.splitext(save_file)
-        fn = fn + '.txt'
+        txt_fn = fn + '.txt'
         g.fig.savefig(save_file)
-        agg.write_dict_to_txt(statistics, fn)
+        agg.write_dict_to_txt(statistics, txt_fn)
         plt.close(g.fig)
+        src_fn = fn + '.csv'
+        src_cols = ['exp_name', 'exp_group', 'rec_name', 'rec_group',
+                    'unit_name', 'unit_num', 'electrode', 'area',
+                    'single_unit', 'regular_spiking', 'fast_spiking',
+                    'intra_J3', 'held_unit_name', 'time_group', 'cta_group',
+                    'baseline_firing', 'response_firing', 'unit_type']
+        orig_df.to_csv(src_fn, columns=src_cols, index=False)
     else:
         return g, statistics
 
@@ -1758,6 +1784,27 @@ def plot_example_hmms(example_csv, best_hmms, save_file=None):
         return fig
 
 
+def plot_pal_timing_corr(timings, proj, kind='point', save_file=None):
+    col_order = ORDERS['exp_group']
+    hue_order = ORDERS['time_group']
+    order = [1,2,3,'Sacc']
+    df = agg.apply_grouping_cols(timings, proj)
+    #df = df.query('exclude == False and state_group == "early" and palatability > 0')
+    df = df.query('valid == True and exclude == False and state_group == "early" and taste != "Water"').copy()
+    df.loc[df['taste'] == 'Saccharin', 'palatability'] = 'Sacc'
+    g = sns.catplot(data=df, x='palatability', y='t_end', col='exp_group',
+                    hue='time_group', col_order=col_order, hue_order=hue_order,
+                    kind=kind, dodge=True, order=order, ci=95)
+    g.set_ylabels('Transition Time (ms)')
+    g.set_xlabels('Palatability')
+    g.set_titles('{col_name}')
+    g.fig.set_size_inches(15,8)
+    if save_file:
+        g.fig.savefig(save_file)
+        plt.close(g.fig)
+    else:
+        return g
+
 
 
 def plot_mini_hmm(rec_dir, hmm_id, taste, trials, axes, colors=None):
@@ -1805,3 +1852,81 @@ def plot_mini_hmm(rec_dir, hmm_id, taste, trials, axes, colors=None):
             ax.set_xticks([])
 
 
+def make_hmm_prob_tidy_df(best_hmms, t_start=0, t_end=1500):
+    df = best_hmms.dropna(subset=['hmm_id', 'early_state', 'late_state']).copy()
+    id_cols = ['exp_name', 'exp_group', 'rec_group', 'cta_group', 'time_group',
+               'taste', 'palatability', 'n_cells', 'hmm_id', 'sorting', 'exclude']
+    labels = []
+    probs = []
+    t_vec = None
+    state_cols = ['early_state', 'late_state']
+    for i,row in df.iterrows():
+        l_row = row[id_cols].to_list()
+        h5_file = agg.get_hmm_h5(row['rec_dir'])
+        hmm, t, params = ph.load_hmm_from_hdf5(h5_file, int(row['hmm_id']))
+        gamma_probs = hmm.stat_arrays['gamma_probabilities']
+        state_seqs = hmm.stat_arrays['best_sequences']
+        t_idx = np.where((t <= t_end) & (t >= t_start))[0]
+        t = t[t_idx]
+        if t_vec is None:
+            t_vec = t.copy()
+        else:
+            assert np.array_equal(t_vec, t), "time vectors aren't aligned"
+
+        valid_trials = agg.get_valid_trials(state_seqs, np.int_(row[state_cols]),
+                                            min_pts=int(.05/params['dt']),
+                                            time=t)
+        if len(valid_trials) == 0:
+            continue
+
+        for s_col in state_cols:
+            s_name = s_col.replace('_state', '')
+            s_num = int(row[s_col])
+            tmp_p = gamma_probs[:, s_num, t_idx]
+            tmp_p = tmp_p[valid_trials,:]
+            tmp_l = [(*l_row, s_name, x) for x in valid_trials]
+            labels.extend(tmp_l)
+            probs.append(tmp_p)
+
+    id_cols = [*id_cols, 'state', 'trial']
+    index = pd.MultiIndex.from_tuples(labels, names=id_cols)
+    df2 = pd.DataFrame(np.vstack(probs), index=index, columns=t_vec)
+    df2 = df2.reset_index()
+    df3 = df2.melt(id_vars=id_cols, value_vars=t_vec, var_name='time',
+                   value_name='probability')
+    return df3
+
+def plot_gamma_probs(best_hmms, state='late', taste='Saccharin',
+                     t_start=0, t_end=1500, save_file=None):
+    # Drop GFP animals that did not learn CTA and Cre animals that did learn
+    # tmp = best_hmms.query('(exp_group == "Cre" and cta_group == "No CTA") or
+    # (cta_group == "CTA" and exp_group == "GFP")')
+    # best_hmms = tmp.copy()
+    df = make_hmm_prob_tidy_df(best_hmms, t_start=t_start, t_end=t_end)
+    df = df.query('exclude == False and taste == @taste and state == @state')
+    df = df.dropna().copy()
+    src_cols = ['exp_name', 'exp_group', 'rec_group', 'cta_group',
+                'time_group', 'taste', 'palatability', 'n_cells', 'exclude',
+                'state', 'trial', 'time', 'probability']
+
+    fig,ax = plt.subplots(figsize=(15,14))
+    g = sns.lineplot(data=df, x='time', y='probability', hue='exp_group',
+                     style='time_group', ci=95, linewidth=3,
+                     hue_order=ORDERS['exp_group'],
+                     style_order=ORDERS['time_group'], ax=ax)
+
+    g.set_title(f'Mean {state} probabilities\n{taste}')
+    g.set_ylabel('Probability')
+    g.set_xlabel('Time (ms)')
+    g.set_ylim([0,1])
+    g.set_xlim([0,1500])
+
+    if save_file:
+        fig.savefig(save_file)
+        plt.close(fig)
+        fn, ext = os.path.splitext(save_file)
+        src_fn = fn + '_source_data.csv'
+        df.to_csv(src_fn, columns=src_cols, index=False)
+        return None
+    else:
+        return fig, ax
