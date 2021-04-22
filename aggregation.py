@@ -70,8 +70,20 @@ def get_all_units(proj):
 
 
 def find_held_units(proj, percent_criterion=95, raw_waves=False):
+    '''First this makes a list of all single units in all recordings. Then it
+    computes the intra-recoding J3 values for each single units. Then it
+    compute all possible inter-recording J3 values for all units on the same
+    electrode in consecutive recordings for each animal. Finally, if an
+    inter-recording J3 value is less than the 95% precentile of the
+    intra-recording J3 values for each experimental group then it is marked as
+    held. If multiple pairs qualify containing the same neurons then the one
+    with the lowest inter-J3 value is the one marked as held and the others are
+    not.
+    '''
     all_units = get_all_units(proj)
     sing_units = all_units[all_units['single_unit'] == True]
+
+    # Get intra-J3 values
     sing_units['intra_J3'] = sing_units.apply(lambda x: get_unit_J3(x['rec_dir'],
                                                                     x['unit_name'],
                                                                     raw_waves=raw_waves),
@@ -83,9 +95,10 @@ def find_held_units(proj, percent_criterion=95, raw_waves=False):
     rec_order = ['preCTA', 'ctaTrain', 'ctaTest', 'postCTA']
 
     # Loop through animal, electrode, rec pairs
-    # Store rec1, el1, unit1, rec2, el2, unit2, interJ3, held, held_unit_name
+    # Store rec1, unit1, rec2, unit2, interJ3, held, held_unit_name
     held_df = pd.DataFrame(columns=['rec1', 'unit1', 'rec2', 'unit2',
                                     'inter_J3', 'held', 'held_unit_name', 'exp_group', 'exp_name'])
+    # Get all inter-J3 values
     for group_name, group in sing_units.groupby(['exp_name', 'electrode']):
         anim = group_name[0]
         electrode = group_name[1]
@@ -121,6 +134,7 @@ def find_held_units(proj, percent_criterion=95, raw_waves=False):
                                           'exp_name': anim},
                                          ignore_index=True)
 
+    # Apply held unit criteria and resolve multiple matches
     new_held_df = None
     for group_name, group in held_df.groupby('exp_group'):
         thresh = np.percentile(sing_units.query('exp_group == @group_name')['intra_J3'],
@@ -133,10 +147,9 @@ def find_held_units(proj, percent_criterion=95, raw_waves=False):
             tmp['held_unit_name'] = tmp['held_unit_name'] + max_num
             new_held_df = new_held_df.append(tmp, ignore_index=True).reset_index(drop=True)
 
-    #held_df = resolve_matches(held_df, threshold)
     held_df = new_held_df.copy()
 
-    # Now put the unit letters into the all_units array
+    # Now put the held unit numbers into the all_units array
     for i, row in held_df.iterrows():
         if not row['held']:
             continue
@@ -154,8 +167,6 @@ def find_held_units(proj, percent_criterion=95, raw_waves=False):
         all_units.loc[tmp.index, 'held_unit_name'] = letter
 
     return all_units, held_df
-    # Plot J3 distributions
-    # Save dataframes
 
 
 def get_inter_J3(rec1, unit1, rec2, unit2, raw_waves=False):
@@ -468,11 +479,13 @@ def apply_grouping_cols(df, proj):
 
         df['exp_name'] = df[from_col].apply(exp_name)
 
+    # Apply grouping info from blechpy.project._exp_info
     map_df = proj._exp_info.set_index('exp_name')
     df['cta_group'] = df['exp_name'].map(map_df['cta_group'].to_dict())
     df['exp_group'] = df['exp_name'].map(map_df['exp_group'].to_dict())
     df['exclude'] = df.apply(apply_exclude, axis=1)
 
+    # Apply time_group col based on rec_group  or rec_dir
     if 'rec_group' in df.columns:
         col = 'rec_group'
     elif 'rec_dir' in df.columns:

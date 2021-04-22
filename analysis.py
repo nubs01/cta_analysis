@@ -27,17 +27,6 @@ from tqdm import tqdm
 from statsmodels.stats.weightstats import CompareMeans
 from joblib import parallel_backend
 
-PAL_MAP = {'Water': -1, 'Saccharin': -1, 'Quinine': 1,
-           'Citric Acid': 2, 'NaCl': 3}
-
-
-ELECTRODES_IN_GC = {'RN5': 'right', 'RN10': 'both', 'RN11': 'right',
-                    'RN15': 'both', 'RN16': 'both', 'RN17': 'both',
-                    'RN18': 'both', 'RN19': 'right', 'RN20': 'right',
-                    'RN21': 'right', 'RN22': 'both', 'RN23': 'right',
-                    'RN24': 'both', 'RN25': 'both'}
-
-
 ANALYSIS_PARAMS = {'taste_responsive': {'win_size': 1000, 'alpha': 0.05},
                    'pal_responsive': {'win_size': 250, 'step_size': 25,
                                       'time_win': [-250, 2000], 'alpha': 0.05},
@@ -108,7 +97,9 @@ class ProjectAnalysis(object):
             all_units = feather.read_dataframe(all_units_file)
             held_df = feather.read_dataframe(held_units_file)
         else:
-            all_units, held_df = agg.find_held_units(self.project, percent_criterion, raw_waves)
+            all_units, held_df = agg.find_held_units(self.project,
+                                                     percent_criterion,
+                                                     raw_waves)
             feather.write_dataframe(all_units, all_units_file)
             feather.write_dataframe(held_df, held_units_file)
 
@@ -133,25 +124,15 @@ class ProjectAnalysis(object):
 
         all_units = feather.read_dataframe(all_units_file)
         held_df = feather.read_dataframe(held_units_file)
-        if 'time_group' not in all_units.columns:
-            time_map = {'preCTA' : 'preCTA', 'ctaTrain': 'preCTA', 'ctaTest':
-                        'postCTA', 'postCTA': 'postCTA'}
-            all_units['time_group'] = all_units.rec_group.map(time_map)
+        grouping_cols = ['cta_group', 'exp_group', 'time_group', 'exclude']
+
+        if any([x not in all_units.columns for x in grouping_cols]):
+            all_units = agg.apply_grouping_cols(all_units, self.project)
             self.write_unit_info(all_units=all_units)
 
-        if 'time_group' not in held_df.columns:
-            held_df = held_df.apply(apply_info_from_rec_dir, axis=1)
-            self.write_unit_info(held_df=held_df)
-
-        cta_map = self.project._exp_info.set_index('exp_name')['CTA_learned'].to_dict()
-        cta_map = {k: 'CTA' if v else 'No CTA' for k,v in cta_map.items()}
-        if 'cta_group' not in all_units.columns:
-            all_units['cta_group'] = all_units.exp_name.map(cta_map)
+        if any([x not in held_units.columns for x in grouping_cols]):
+            all_units = agg.apply_grouping_cols(held_units, self.project)
             self.write_unit_info(all_units=all_units)
-
-        if 'cta_group' not in held_df.columns:
-            all_units['cta_group'] = all_units.exp_name.map(cta_map)
-            self.write_unit_info(held_df=held_df)
 
         if 'area' not in held_df.columns:
             for i, row in held_df.iterrows():
@@ -159,10 +140,6 @@ class ProjectAnalysis(object):
                 u1 = row['unit1']
                 held_df.loc[i, 'area'] = all_units.query('rec_dir == @r1 and unit_name == @u1').iloc[0]['area']
             self.write_unit_info(held_df=held_df)
-
-        if 'exclude' not in all_units.columns:
-            all_units = agg.apply_grouping_cols(all_units, self.project)
-            self.write_unit_info(all_units=all_units)
 
         if 'response_firing' not in all_units.columns:
             all_units = apply_unit_firing_rates(all_units)
