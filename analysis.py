@@ -431,6 +431,12 @@ class ProjectAnalysis(object):
 
         return
 
+    def plot_figure_1(self):
+        save_dir = os.path.join(self.save_dir, 'single_unit_responses')
+        all_units, _ = self.get_unit_info()
+        fn = os.path.join(save_dir, 'unit_firing_rates.svg')
+        nplt.plot_unit_firing_rates(all_units, save_file=fn)
+
     def process_single_units(self, params=None, overwrite=False):
         save_dir = os.path.join(self.save_dir, 'single_unit_responses')
         pal_file = os.path.join(save_dir, 'palatability_data.npz')
