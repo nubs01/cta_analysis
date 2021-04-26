@@ -461,6 +461,11 @@ def apply_grouping_cols(df, proj):
     cols = list(df.columns)
     if not any([x in cols for x in base_cols]):
         return df
+    else:
+        df = df.copy()
+
+    if 'rec_dir' in cols and 'rec_group' not in cols:
+        df['rec_group'] = df['rec_dir'].apply(parse_rec)
 
     if 'exp_name' not in cols:
         if 'exp_dir' in cols:
@@ -503,6 +508,18 @@ def apply_grouping_cols(df, proj):
 
     df['time_group'] = df[col].apply(time_group)
     return df
+
+
+def parse_rec(rd):
+    if rd[-1] == os.sep:
+        rd = rd[:-1]
+
+    parsed = os.path.basename(rd).split('_')
+    rec_group = parsed[-3]
+    if rec_group == 'SaccTest':
+        rec_group = 'ctaTest'
+
+    return rec_group
 
 
 def apply_exclude(row):
