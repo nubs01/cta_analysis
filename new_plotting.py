@@ -1,4 +1,5 @@
 import aggregation as agg
+from statsmodels.stats.weightstats import CompareMeans
 import os
 import numpy as np
 import pandas as pd
@@ -1413,8 +1414,12 @@ def plot_full_dim_MDS(df, save_file=None):
         return g, statistics
 
 
-def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
-    df = all_units.query('single_unit == True and area == "GC" and exclude==False').copy()
+def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None, exclude=True):
+    if exclude:
+        df = all_units.query('single_unit == True and area == "GC" and exclude==False').copy()
+    else:
+        df = all_units.query('single_unit == True and area == "GC"').copy()
+
     ups = df.groupby(['exp_name', 'rec_group']).size().mean()
     ups_sem = df.groupby(['exp_name', 'rec_group']).size().sem()
     statistics = {'units per session': '%1.2f ± %1.2f' % (ups, ups_sem),
@@ -1424,12 +1429,12 @@ def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
     id_cols = ['exp_name', 'exp_group', 'rec_group', 'area', 'unit_type', 'time_group', 'cta_group']
     df = df.melt(id_vars=id_cols, value_vars=value_cols,
                  var_name='firing_type', value_name='firing_rate')
-    
+
     order = ORDERS[group_col]
     hue_order = ORDERS['time_group']
     col_order = ORDERS['unit_type']
     row_order = ['baseline_firing', 'response_firing', 'norm_response_firing']
-    cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))] 
+    cond_order = ['%s_%s' % x for x in list(it.product(order, hue_order))]
     df['group_col'] = df.apply(lambda x: '%s_%s' % (x[group_col], x['time_group']), axis=1)
 
     # plot baseline and response firing rates 
@@ -1457,6 +1462,13 @@ def plot_unit_firing_rates(all_units, group_col='exp_group', save_file=None):
         aov, ptt = stats.anova(group, dv='firing_rate', between=['exp_group', 'time_group'])
         tmp = {'KW Stat': kw_s, 'KW p': kw_p, 'Games-Howell posthoc': gh_df,
                'anova': aov, 't-tests': ptt}
+
+        # Get 95% CI of difference between exp_groups
+        group_names, y = zip(*group.groupby('exp_group')['firing_rate'])
+        cm = CompareMeans.from_data(y[0], y[1])
+        low, high = cm.tconfint_diff(alpha=0.05, usevar='unequal')
+        tmp['group_diff_95CI'] = (low, high)
+
         if ft in statistics.keys():
             statistics[ft][ut] = tmp
         else:
