@@ -1129,7 +1129,7 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
                                            else 'Late (750-2000ms)')
     src_cols = ['exp_name', 'exp_group', 'cta_group', 'time_group',
                 'unit_num', 'time_bin', 'resp_time', 'spearman_r',
-                'r2']
+                'r2', 'cells']
 
     diff_df = stats.get_diff_df(df, ['exp_group', 'time_group', 'cta_group'],
                                 'resp_time', 'r2')
@@ -1241,13 +1241,20 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     aov, ptt = stats.anova(simp_df,
                            between=['exp_group', 'time_group'],
                            within='time_bin', dv='r2', subject='cells')
+
+    # Get 95% CI of difference between exp_groups
+    _, y = zip(*simp_df.groupby('exp_group')['r2'])
+    cm = CompareMeans.from_data(y[0], y[1])
+    low, high = cm.tconfint_diff(alpha=0.05, usevar='unequal')
+
     counts = simp_df.groupby(['simple_groups', 'time_group']).size()
     tmp = simp_df.groupby(['exp_name', 'exp_group', 'time_group'])['unit_num']
     tmp = tmp.agg(lambda x: len(np.unique(x)))
     tmp = tmp.groupby(['exp_group', 'time_group']).sum().reset_index()
     tmp = tmp.rename(columns={'unit_num': 'n_cells'})
     other_stats = {'KW Stat': kw_s, 'KW p-val': kw_p, 'Games-Howell psthoc':
-                   gh_df, 'anova': aov, 't-tests': ptt, 'counts': counts, 'n_cells': tmp}
+                   gh_df, 'anova': aov, 't-tests': ptt, 'counts': counts,
+                   'n_cells': tmp, '95% CI': (low, high)}
     #Everything is significant, just add in illustrator
     #plot_sig_stars(ax, gh_df, g2_order)
 
@@ -1818,7 +1825,6 @@ def plot_pal_timing_corr(timings, proj, kind='point', save_file=None):
         return g
 
 
-
 def plot_mini_hmm(rec_dir, hmm_id, taste, trials, axes, colors=None):
     h5_file = hmma.get_hmm_h5(rec_dir)
     hmm, time, params = ph.load_hmm_from_hdf5(h5_file, hmm_id)
@@ -1907,6 +1913,7 @@ def make_hmm_prob_tidy_df(best_hmms, t_start=0, t_end=1500):
     df3 = df2.melt(id_vars=id_cols, value_vars=t_vec, var_name='time',
                    value_name='probability')
     return df3
+
 
 def plot_gamma_probs(best_hmms, state='late', taste='Saccharin',
                      t_start=0, t_end=1500, save_file=None):
