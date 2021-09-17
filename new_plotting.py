@@ -1238,9 +1238,12 @@ def plot_mean_spearman_correlation(pal_file, proj, save_file=None):
     simp_df['cells'] = simp_df.apply(lambda x: '%s_%s_%s' % (x['exp_name'],
                                                              x['time_group'],
                                                              x['unit_num']), axis=1)
+    #aov, ptt = stats.anova(simp_df,
+    #                       between=['exp_group', 'time_group'],
+    #                       within='time_bin', dv='r2', subject='cells')
     aov, ptt = stats.anova(simp_df,
                            between=['exp_group', 'time_group'],
-                           within='time_bin', dv='r2', subject='cells')
+                           dv='r2', subject='cells')
 
     # Get 95% CI of difference between exp_groups
     _, y = zip(*simp_df.groupby('exp_group')['r2'])
@@ -1513,10 +1516,12 @@ def plot_saccharin_consumption(proj, save_file=None):
     df = df.query('grouping != "Cre_CTA"')
     #df = df.query('exclude == False')
     order = [x for x in order if x in df.grouping.unique()]
-    order = ['GFP_CTA', 'Cre_No CTA', 'GFP_No CTA']
+    #order = ['GFP_CTA', 'Cre_No CTA', 'GFP_No CTA']
+    order = ['GFP_CTA', 'Cre_No CTA']
+    df = df.query('grouping != "GFP_No CTA"')
     df = df.dropna()
     fig, ax = plt.subplots(figsize=(8.5,7))
-    g = sns.boxplot(data=df, x='grouping', y='saccharin_consumption', order=order, ax=ax)
+    g = sns.barplot(data=df, x='grouping', y='saccharin_consumption', order=order, ax=ax)
     n_cells = df.groupby('grouping').size().to_dict()
     kw_s, kw_p, gh_df = stats.kw_and_gh(df, 'grouping', 'saccharin_consumption')
     out_stats = {'counts': n_cells, 'Kruskal-Wallis Stat': kw_s, 'Kruskal-Wallis p-val': kw_p,
@@ -1526,7 +1531,7 @@ def plot_saccharin_consumption(proj, save_file=None):
     g.set_title('Saccharin Consumption\nrelative to mean water consumption')
     plot_sig_stars(g, gh_df, cond_order=order, n_cells=n_cells)
     g.axhline(80, linestyle='--', color='k', alpha=0.6)
-    g.set_yscale('log')
+    #g.set_yscale('log')
     g.set_yticklabels(g.get_yticks(minor=True), minor=True)
 
     if save_file:

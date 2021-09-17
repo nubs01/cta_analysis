@@ -1041,15 +1041,18 @@ class HmmAnalysis(object):
             print('aggregating hmm data...')
             #pbar = tqdm(total=self.project._exp_info.shape[0]*4)
             for i, row in self.project._exp_info.iterrows():
-                exp = load_experiment(row['exp_dir'])
+                exp_dir = get_local_path(row['exp_dir'])
+                exp = load_experiment(exp_dir)
+                exp._change_root(exp_dir)
                 for rec_dir in exp.recording_dirs:
-                    print('processing %s' % os.path.basename(rec_dir))
-                    h5_file = hmma.get_hmm_h5(rec_dir)
+                    rd = get_local_path(rec_dir)
+                    print('processing %s' % os.path.basename(rd))
+                    h5_file = hmma.get_hmm_h5(rd)
                     if h5_file is None:
                         #pbar.update(1)
                         continue
 
-                    handler = phmm.HmmHandler(rec_dir)
+                    handler = phmm.HmmHandler(rd)
                     df = handler.get_data_overview().copy()
                     df['rec_dir'] = rec_dir
                     if ho is None:
@@ -2432,16 +2435,17 @@ def refit_anim(needed_hmms, anim, rec_group=None, custom_params=None):
         handler.run(constraint_func=hmma.sequential_constrained)
 
 
-def fit_anim_hmms(anim):
+def fit_anim_hmms(anim, base_params=None, constraint=None):
     if anim == 'RN5':
         anim = 'RN5b'
 
     file_dirs, anim_dir = get_file_dirs(anim)
-    base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
-                   'max_iter': 200, 'n_repeats': 50, 'time_start': -250,
-                   'time_end': 2000, 'n_states': 3, 'area': 'GC',
-                   'hmm_class': 'PoissonHMM', 'threshold':1e-10,
-                   'notes': 'sequential - low thresh'}
+    if base_params is None:
+        base_params = {'n_trials': 15, 'unit_type': 'single', 'dt': 0.001,
+                       'max_iter': 200, 'n_repeats': 50, 'time_start': -250,
+                       'time_end': 2000, 'n_states': 3, 'area': 'GC',
+                       'hmm_class': 'PoissonHMM', 'threshold':1e-10,
+                       'notes': 'sequential - low thresh'}
 
     for rec_dir in file_dirs:
         units = phmm.query_units(rec_dir, 'single', area='GC')
@@ -2471,11 +2475,16 @@ def fit_anim_hmms(anim):
         dataname = os.path.basename(rec_dir)
         with pm.push_alert(success_msg=f'Done fitting for {dataname}'):
             print('Fitting %s' % os.path.basename(rec_dir))
+            if type(constraint) == 'function':
+                print('Fitting Constraint: %s' % constraint.__name__)
+            else:
+                print('Fitting Constraint: %s' % str(constraint))
+
             if LOCAL_MACHINE == 'StealthElf':
-                handler.run(constraint_func=hmma.sequential_constrained)
+                handler.run(constraint_func=constraint)
             elif LOCAL_MACHINE == 'Mononoke':
                 with parallel_backend('multiprocessing'):
-                    handler.run(constraint_func=hmma.sequential_constrained)
+                    handler.run(constraint_func=constraint)
 
 
 @pm.push_alert(success_msg='Finished fitting HMMs')
